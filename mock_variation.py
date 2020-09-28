@@ -17,6 +17,7 @@ def read_out(path):
     with h5py.File(path, 'r') as f:
         d = f['data'][:]
         r = f['r_fit'][:]
+        # actual data doesn't have the following
         R = f['R'][:]
         dr = f['dr_fit'][:]
         dR = f['dR'][:]
@@ -255,10 +256,12 @@ def main():
     # set a max loop limit if we don't converge
     convergence_limit = 2000
     # the path where the data is saved
-    dir = 'data/variation/'
+    dir = 'data/'
     test = dir + 'mock_data.h5'
     model_path = dir + 'green2020_nn_model.h5'
     saving = dir + 'mock_result.h5'
+
+    only_r = True
 
     #TODO Maybe lower rho as iterations go on?
     rho = [4e-1,4e-4,4e-1,4e-1]
@@ -278,48 +281,52 @@ def main():
     dE = []
 
     # prepare the first R (not BR!) and set an inital value for lambdas
-    R = np.einsum('ij,j->i',B_inv, BR[0])
+    R = np.einsum('ij,j->i',B_inv, BR[-1])
     l1, l2, l3, l4 = [1], [1], [1], [1]
 
     for i in range(convergence_limit):
-        # calculate the root of chi_sq for dE
-        dE_temp = calculate_E(BdR[i], E[i], BR[i], C, dm)
-        dE.append(dE_temp)
-        # calculate the terms of chi_sq when fitting for dR, that are independant of dR
-        comp = sum_loop(mC, Cm, C, dE[i], BR[i], E[i])
-        arg = (l1[i], l2[i], rho[:2], B_inv, BR[i], R) + tuple(comp.values())
-        # minimizing the augmented lagranian with respect to dR and append the solution
-        with np.errstate(divide='ignore', invalid='ignore'):
-            res = minimize(lagrangian, BdR[i], arg)
-        BdR.append(res.x)
-        # calculate the newest dR (not BdR)
-        dR = np.einsum('ij,j->i', B_inv, BdR[i+1])
-        # update lambda_1 and _2 according to the constraints and append
-        l_1 = l1[i] + rho[0]*np.dot(R,dR)
-        l_2 = l2[i] + rho[1]*(np.dot(BdR[i+1],BdR[i+1])**0.5-1)
-        l1.append(l_1)
-        l2.append(l_2)
-        # calculate the root of chi_sq for E and append
-        E_temp = calculate_E(BR[i], dE[i], BdR[i+1], C, dm)
-        E.append(E_temp)
-        # calculate the terms of chi_sq when fitting for R, that are independant of R
-        comp = sum_loop(mC, Cm, C, E[i+1], BdR[i+1], dE[i])
-        arg = (l3[i], l4[i], rho[2:], B_inv, BdR[i], dR) + tuple(comp.values())
-        # minimizing the augmented lagranian with respect to R and append the solution
-        with np.errstate(divide='ignore', invalid='ignore'):
-            res = minimize(lagrangian, BR[i], arg)
-        BR.append(res.x)
-        # calculate the newest R (not BR)
-        R = np.einsum('ij,j->i',B_inv, BR[i+1])
-        # update lambda_3 and _4 according to the constraints and append
-        l_3 = l3[i] + rho[2]*np.dot(dR,R)
-        l_4 = l4[i] + rho[3]*(np.dot(BR[i+1],BR[i+1])**0.5-1)
-        l3.append(l_3)
-        l4.append(l_4)
-        # checking if we converged in this iteration
-        converge = 0
-        if i%25 == 0:
-            print(f'Iteration {i} Complete')
+        if only_dr:
+            # calculate the root of chi_sq for dE
+            dE_temp = calculate_E(BdR[-1], E[-1], BR[-1], C, dm)
+            dE.append(dE_temp)
+            # calculate the terms of chi_sq when fitting for dR, that are independant of dR
+            comp = sum_loop(mC, Cm, C, dE[-1], BR[-1], E[-1])
+            arg = (l1[-1], l2[-1], rho[:2], B_inv, BR[-1], R) + tuple(comp.values())
+            # minimizing the augmented lagranian with respect to dR and append the solution
+            with np.errstate(divide='ignore', invalid='ignore'):
+                res = minimize(lagrangian, BdR[-1], arg)
+            BdR.append(res.x)
+            # calculate the newest dR (not BdR)
+            dR = np.einsum('ij,j->i', B_inv, BdR[-1])
+            # update lambda_1 and _2 according to the constraints and append
+            l_1 = l1[-1] + rho[0]*np.dot(R,dR)
+            l_2 = l2[-1] + rho[1]*(np.dot(BdR[-1],BdR[-1])**0.5-1)
+            l1.append(l_1)
+            l2.append(l_2)
+
+        if only_r:
+            # calculate the root of chi_sq for E and append
+            E_temp = calculate_E(BR[-1], dE[-1], BdR[-1], C, dm)
+            E.append(E_temp)
+            # calculate the terms of chi_sq when fitting for R, that are independant of R
+            comp = sum_loop(mC, Cm, C, E[-1], BdR[-1], dE[-1])
+            arg = (l3[-1], l4[-1], rho[2:], B_inv, BdR[-1], dR) + tuple(comp.values())
+            assert(
+            # minimizing the augmented lagranian with respect to R and append the solution
+            with np.errstate(divide='ignore', invalid='ignore'):
+                res = minimize(lagrangian, BR[i], arg)
+            BR.append(res.x)
+            # calculate the newest R (not BR)
+            R = np.einsum('ij,j->i',B_inv, BR[i+1])
+            # update lambda_3 and _4 according to the constraints and append
+            l_3 = l3[i] + rho[2]*np.dot(dR,R)
+            l_4 = l4[i] + rho[3]*(np.dot(BR[i+1],BR[i+1])**0.5-1)
+            l3.append(l_3)
+            l4.append(l_4)
+            # checking if we converged in this iteration
+            converge = 0
+            if i%25 == 0:
+                print(f'Iteration {i} Complete')
 
 
     # checking if we actually converged or did max amount of iterations without converging
