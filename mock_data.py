@@ -86,8 +86,6 @@ def mock_m(d, r, nn, seed = 14, max = 0.01):
 
     Returns
     -------
-    m: np.array
-        The mock magnitude we want to replace in the test data
     BR: np.array
         The general reddening vector we obtained from the Neural Network
     dE: np.array
@@ -95,6 +93,8 @@ def mock_m(d, r, nn, seed = 14, max = 0.01):
     BdR: np.array
         The general reddening variation vector we obtained from guess_dR
     """
+    # set rng seed to be able to reproduce results
+    rng = np.random.default_rng(seed)
 
     # determine the amount of bands and stars measured, should be 13 bands and create the B-matrix
     n_stars, n_bands = d['mag'].shape
@@ -117,15 +117,28 @@ def mock_m(d, r, nn, seed = 14, max = 0.01):
     # guess BdR and generate random dE to add them to the mock m
     dR = guess_dR(R)
     BdR = np.einsum('ij,j->i',B,dR)
-    dE = max*np.random.default_rng(seed).random((n_stars,))
+    dE = max*rng.random((n_stars,))
     m[:,:] += dE[:,None] * dR[None,:]
+    d['mag'] = m
 
-    return m, R, dE, dR
+    # make sure we have an error for every magnitude
+    m_err = d['mag_err'].copy()
+
+    for b in range(n_bands):
+        idx = ~np.isfinite(m_err[:,b])
+        idx2 = (m_err[:,b] < 0.08)
+        sample = m_err[idx2]
+        replace = rng.choice(sample, np.sum(idx))
+        m_err[idx] = replace
+
+    d['mag_err'] = m_err
+
+    return R, dE, dR
 
 
 def main():
     # the folder location where the datasets are saved
-    dir = 'data/variation/'
+    dir = 'data/'
     # the actual file names
     base = dir + 'green2020_test_data_small.h5'
     mock = dir + 'mock_data.h5'
@@ -147,11 +160,8 @@ def main():
     d = d[idx]
     r = r[idx]
 
-    # calculate R, dR and dE and the resulting new m
-    m, R, dr, dR = mock_m(d, r, nn_model)
-
-    # replace the observed magnitude with out calculated and save as mock_data.h5
-    d['mag'] = m
+    # calculate R, dR and dE and replace mag and mag_err in the dataset
+    R, dr, dR = mock_m(d, r, nn_model)
     save(mock, d, r, R, dr, dR)
 
     return 0

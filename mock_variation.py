@@ -5,6 +5,7 @@ Predicting reddening and variation through chi_sq minimization of diff. between 
 """
 
 import numpy as np
+import matplotlib.pyplot as plt
 import h5py
 import json
 import silence_tensorflow.auto
@@ -17,15 +18,19 @@ def read_out(path):
     with h5py.File(path, 'r') as f:
         d = f['data'][:]
         r = f['r_fit'][:]
-        # actual data doesn't have the following
-        R = f['R'][:]
-        dr = f['dr_fit'][:]
-        dR = f['dR'][:]
+        if 'mock' in path:
+            R = f['R'][:]
+            dr = f['dr_fit'][:]
+            dR = f['dR'][:]
+        else:
+            R = []
+            dr = []
+            dR = []
 
     return d, r, R, dr, dR
 
 
-def save(path, r, R, dr, dR, l, m , C):
+def save(path, r, R, dr, dR, l, m , C, chi_sq):
     # save the mock data run
     with h5py.File(path, 'w') as f:
         f.create_dataset('/E', data=r, chunks=True, compression='gzip', compression_opts=3)
@@ -35,6 +40,7 @@ def save(path, r, R, dr, dR, l, m , C):
         f.create_dataset('/l', data=l, chunks=True, compression='gzip', compression_opts=3)
         f.create_dataset('/dm', data=m, chunks=True, compression='gzip', compression_opts=3)
         f.create_dataset('/C', data=C, chunks=True, compression='gzip', compression_opts=3)
+        f.create_dataset('/chi', data=chi_sq, chunks=True, compression='gzip', compression_opts=3)
 
 def guess_dR(BR, B, B_inv):
     # read out the mean wavelengths of the 13 filters we use
@@ -50,17 +56,26 @@ def guess_dR(BR, B, B_inv):
 
     # norm it to 1 and transform it to mag/color space
     y /= np.dot(y,y)**0.5
-    print('guess_dR:', np.around(y,3))
     BdR = np.einsum('ij,j->i',B,y)
 
     return BdR
 
 
-def chi_squared(dE, dR, E, R, C, dm):
+def calculate_pre_loop(dm, C):
+    # calculate some terms of chi_sq before which don't change over the iterations
+    mcm = np.einsum('ni,nij,nj->n',dm,C,dm)
+    mc = np.einsum('ni,nij->nj',dm,C)
+    cm = np.einsum('nij,nj->ni',C,dm)
+    mcm_sum = np.sum(mcm)
+
+    return mcm_sum, mc, cm
+
+
+def chi_sq(dE, dR, E, R, C, dm):
     # calculate (dm + E*R + dE*dR) for each star
     bracket = dm[:,:] + E[:,None]*R[None,:] + dE[:,None]*dR[None,:]
     # calculate chi_square for each star and return it as an array (not summed)
-    cho = np.einsum('ni,nij,->nj',bracket,C)
+    cho = np.einsum('ni,nij->nj',bracket,C)
     chi = np.einsum('ni,ni->n',cho,bracket)
 
     return chi
@@ -79,59 +94,80 @@ def calculate_E(R, dE, dR, C, m):
     return E
 
 
-def calculate_pre_loop(dm, C):
-    # calculate some terms of chi_sq before which don't change over the iterations
-    mcm = np.einsum('ni,nij,nj->n',dm,C,dm)
-    mc = np.einsum('ni,nij->nj',dm,C)
-    cm = np.einsum('nij,nj->ni',C,dm)
-    mcm_sum = np.sum(mcm)
+def constraint_ortho(R, dR, l1 = None, B_inv = None):
+    # transform R and dR into the right space where we want them to be orthogonal
+    if B_inv is not None:
+        R = np.einsum('ij,j->i',B_inv,R)
+        dR = np.einsum('ij,j->i',B_inv,dR)
+    # constraint that is  f(R,dR) - b
+    con = (np.dot(R,dR))
 
-    return mcm_sum, mc, cm
+    if l1 is not None:
+        con *= l1
 
-
-def sum_loop(mC, Cm, C, E2, R1, E1):
-    # calculate terms of chi_sq if R (reddening or variation) is the variables
-    dic = {}
-    RC = E1[:,None]*np.einsum('i,nij->nj',R1,C)
-    CR = E1[:,None]*np.einsum('nij,j->ni',C,R1)
-    RCm = E1*np.einsum('i,ni->n',R1,Cm)
-    mCR = E1*np.einsum('ni,i->n',mC,R1)
-    RCR = E1*np.einsum('i,ni->n',R1,RC)
-
-    # sum each term over all data points so the scipy method doesn't do the calculations
-    dic['EEC'] = np.sum(E2[:,None,None]**2*C, axis=0)
-    dic['EmC'] = np.sum(E2[:,None]*mC, axis=0)
-    dic['ECm'] = np.sum(E2[:,None]*Cm, axis=0)
-    dic['ECR'] = np.sum(E2[:,None]*CR, axis=0)
-    dic['ERC'] = np.sum(E2[:,None]*RC, axis=0)
-    dic['RCm'] = np.sum(RCm, axis=0)
-    dic['mCR'] = np.sum(mCR, axis=0)
-    dic['RCR'] = np.sum(RCR, axis=0)
-
-    return dic
+    return con
 
 
-def lagrangian(R2, l1, l2, rho, B_inv, R1, BR1, EEC, EmC, ECm, ECR, ERC, RCm, mCR, RCR):
+def constraint_unity(R, l2 = None):
+    # constraint that is f(R) - b
+    con = (np.dot(R,R)**0.5 - 1)
+
+    if l2 is not None:
+        con *= l2
+
+    return con
+
+
+def lagrangian(R2, l1, l2, rho, B_inv, R1, EEC, EmC, ECm, ECR, ERC, RCm, mCR, RCR):
     # calculate the terms that depend on the varibale we minimize for in chi_sq
     rCr = np.einsum('i,ij,j',R2,EEC,R2)
     mCr = np.dot(EmC,R2)
     rCm = np.dot(ECm,R2)
     rCR = np.dot(ERC,R2)
     RCr = np.dot(ECR,R2)
-    BR2 = np.einsum('ij,j->i',B_inv,R2)
 
     # define the constraints for the minimization (length 1 and perpendicular in mag space to R1)
-    con_1 = np.dot(BR1,BR2)
-    con_2 = np.dot(R2,R2)**0.5-1
+    con_1 = constraint_ortho(R2, R1, l1, B_inv)
+    con_2 = constraint_unity(R2, l2)
+    pen_1 = constraint_ortho(R2, R1, (0.5*rho[0])**0.5, B_inv)**2
+    pen_2 = constraint_unity(R2, (0.5*rho[1])**0.5)**2
 
     # calculate the 3 components of our augmented lagrangian
     chi = rCr + mCr + rCm + rCR + RCr + RCm + mCR + RCR
-    constraint = l1*con_1 + l2*con_2
-    penalty = rho[0]/2*con_1**2 + rho[1]/2*con_2**2
+    con = con_1 + con_2
+    pen = pen_1 + pen_2
     # calculate the augmented lagranian
-    lag = chi + constraint + penalty
+    lag = chi + con + pen
 
     return lag
+
+
+def calculate_R(R, E, dR, dE, C, m, mC, Cm, l1, l2, rho, B_inv):
+    # calculate terms of chi_sq if R (reddening or variation) is the variables
+    RC = dE[:,None]*np.einsum('i,nij->nj',dR,C)
+    CR = dE[:,None]*np.einsum('nij,j->ni',C,dR)
+    RCm = dE*np.einsum('i,ni->n',dR,Cm)
+    mCR = dE*np.einsum('ni,i->n',mC,dR)
+    RCR = dE*np.einsum('i,ni->n',dR,CR)
+
+    # sum each term over all data points so the scipy method doesn't do the calculations
+    EEC = np.sum(E[:,None,None]**2*C, axis=0)
+    EmC = np.sum(E[:,None]*mC, axis=0)
+    ECm = np.sum(E[:,None]*Cm, axis=0)
+    ECR = np.sum(E[:,None]*CR, axis=0)
+    ERC = np.sum(E[:,None]*RC, axis=0)
+    RCm = np.sum(RCm, axis=0)
+    mCR = np.sum(mCR, axis=0)
+    RCR = np.sum(RCR, axis=0)
+
+    partial = (EEC, EmC, ECm, ECR, ERC, RCm, mCR, RCR)
+    arg = (l1, l2, rho, B_inv, dR) + partial
+
+    # minimizing the augmented lagranian with respect to R and append the solution
+    with np.errstate(divide='ignore', invalid='ignore'):
+        res = minimize(lagrangian, R, arg)
+
+    return res.x
 
 
 def predict_R(theta, nn):
@@ -257,17 +293,16 @@ def main():
     convergence_limit = 2000
     # the path where the data is saved
     dir = 'data/'
-    test = dir + 'mock_data.h5'
+    mock = dir + 'mock_data.h5'
     model_path = dir + 'green2020_nn_model.h5'
     saving = dir + 'mock_result.h5'
-
-    only_r = True
+    test = False
 
     #TODO Maybe lower rho as iterations go on?
     rho = [4e-1,4e-4,4e-1,4e-1]
 
     # read out the data, Neural Network and prepare the data with the Neural Network
-    data, r_mock, R_mock, dr_mock, dR_mock = read_out(test)
+    data, r_fit, R_mock, dr_mock, dR_mock = read_out(mock)
     nn_model = tf.keras.models.load_model(model_path)
     dm, C, BR_m, B, B_inv = prepare_data(data, nn_model)
 
@@ -276,63 +311,57 @@ def main():
 
     # prepare the list that saved the values for each iteration (!!we fit for BR/BdR!!)
     BR = [BR_m]
-    E = [r_mock]
+    E = [r_fit]
     BdR = [guess_dR(BR_m, B, B_inv)]
     dE = []
+    chi = []
 
-    # prepare the first R (not BR!) and set an inital value for lambdas
-    R = np.einsum('ij,j->i',B_inv, BR[-1])
+    if test:
+        dE_temp = calculate_E(BdR[-1], E[-1], BR[-1], C, dm)
+        dE.append(dE_temp)
+        diff = dE[-1] - dr_mock
+        print(np.sum(diff))
+
+    # set an inital value for lambdas
     l1, l2, l3, l4 = [1], [1], [1], [1]
 
     for i in range(convergence_limit):
-        if only_dr:
-            # calculate the root of chi_sq for dE
-            dE_temp = calculate_E(BdR[-1], E[-1], BR[-1], C, dm)
-            dE.append(dE_temp)
-            # calculate the terms of chi_sq when fitting for dR, that are independant of dR
-            comp = sum_loop(mC, Cm, C, dE[-1], BR[-1], E[-1])
-            arg = (l1[-1], l2[-1], rho[:2], B_inv, BR[-1], R) + tuple(comp.values())
-            # minimizing the augmented lagranian with respect to dR and append the solution
-            with np.errstate(divide='ignore', invalid='ignore'):
-                res = minimize(lagrangian, BdR[-1], arg)
-            BdR.append(res.x)
-            # calculate the newest dR (not BdR)
-            dR = np.einsum('ij,j->i', B_inv, BdR[-1])
-            # update lambda_1 and _2 according to the constraints and append
-            l_1 = l1[-1] + rho[0]*np.dot(R,dR)
-            l_2 = l2[-1] + rho[1]*(np.dot(BdR[-1],BdR[-1])**0.5-1)
-            l1.append(l_1)
-            l2.append(l_2)
+        if test: break
+        # calculate the root of chi_sq for dE
+        dE_temp = calculate_E(BdR[-1], E[-1], BR[-1], C, dm)
+        dE.append(dE_temp)
+        # calculate the terms of chi_sq when fitting for dR, that are independant of dR
+        BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, mC, Cm, l1[-1], l2[-1], rho[:2], B_inv)
+        BdR.append(BdR_temp)
+        # update lambda_1 and _2 according to the constraints and append
+        l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0],B_inv)
+        l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1])
+        l1.append(l_1)
+        l2.append(l_2)
 
-        if only_r:
-            # calculate the root of chi_sq for E and append
-            E_temp = calculate_E(BR[-1], dE[-1], BdR[-1], C, dm)
-            E.append(E_temp)
-            # calculate the terms of chi_sq when fitting for R, that are independant of R
-            comp = sum_loop(mC, Cm, C, E[-1], BdR[-1], dE[-1])
-            arg = (l3[-1], l4[-1], rho[2:], B_inv, BdR[-1], dR) + tuple(comp.values())
-            assert(
-            # minimizing the augmented lagranian with respect to R and append the solution
-            with np.errstate(divide='ignore', invalid='ignore'):
-                res = minimize(lagrangian, BR[i], arg)
-            BR.append(res.x)
-            # calculate the newest R (not BR)
-            R = np.einsum('ij,j->i',B_inv, BR[i+1])
-            # update lambda_3 and _4 according to the constraints and append
-            l_3 = l3[i] + rho[2]*np.dot(dR,R)
-            l_4 = l4[i] + rho[3]*(np.dot(BR[i+1],BR[i+1])**0.5-1)
-            l3.append(l_3)
-            l4.append(l_4)
-            # checking if we converged in this iteration
-            converge = 0
-            if i%25 == 0:
-                print(f'Iteration {i} Complete')
+        # calculate the root of chi_sq for E and append
+        E_temp = calculate_E(BR[-1], dE[-1], BdR[-1], C, dm)
+        E.append(E_temp)
+        BR_temp = calculate_R(BR[-1], E[-1], BdR[-1], dE[-1], C, dm, mC, Cm, l3[-1], l4[-1], rho[2:], B_inv)
+        BR.append(BR_temp)
+        # update lambda_3 and _4 according to the constraints and append
+        l_3 = l3[-1] + constraint_ortho(BdR[-1],BR[-1],rho[2],B_inv)
+        l_4 = l4[-1] + constraint_unity(BR[-1],rho[3])
+        l3.append(l_3)
+        l4.append(l_4)
+
+        # Progress
+        chi_t = chi_sq(E[-1], BR[-1], dE[-1], BdR[-1], C, dm)
+        chi.append(chi_t)
+        if i%25 == 0:
+            print(f'Iteration {i} Complete')
 
 
     # checking if we actually converged or did max amount of iterations without converging
     if i == (convergence_limit-1):
         print('No convergence within {} iterations possible!'.format(convergence_limit))
 
+    # saving the data
     dtype = [('l1','f4'),('l2','f4'),('l3','f4'),('l4','f4')]
     l = np.empty(len(l1),dtype=dtype)
     l['l1'] = l1
@@ -340,7 +369,7 @@ def main():
     l['l3'] = l3
     l['l4'] = l4
 
-    save(saving, E, BR, dE, BdR, l, dm, C)
+    save(saving, E, BR, dE, BdR, l, dm, C, chi)
 
     return 0
 

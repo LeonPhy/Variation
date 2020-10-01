@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Calculates the average wavelengths of the passbands.dat (bachelor/passbands) in Angstrom
+Calculates the average wavelengths of the passbands.dat (data/passbands) in Angstrom
 """
 
 
@@ -12,7 +12,7 @@ import json
 from glob import glob
 
 def main():
-    colors = glob('data/bachelor/passbands/*.dat')
+    colors = glob('data/passbands/*.dat')
     #Sorting them by alphabet
     colors.sort()
     #Manually sorted to fit the order of the data
