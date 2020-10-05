@@ -40,6 +40,8 @@ def guess_dR(R):
     b = np.sum(x*R)/np.sum(R)
     y = x[:] - b[None]
 
+    # add a factor to scale the reddening vector so our initial guess is not the same
+    y *= 0.4
     # norm it to 1
     y /= np.dot(y,y)**0.5
 
@@ -66,7 +68,7 @@ def predict_R(theta, nn):
     return R_model(theta).numpy()
 
 
-def mock_m(d, r, nn, seed = 14, max = 0.01):
+def mock_m(d, r, nn, seed = 14, max = 0.1):
     """
     Calculates a mock magnitude by predicting absolute magnitude and add Reddening as well as
     Variation manually to create a mock magnitude.

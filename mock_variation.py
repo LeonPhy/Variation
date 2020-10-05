@@ -288,15 +288,64 @@ def prepare_data(d, nn):
     return dm, C, R_mean, B, B_inv
 
 
+def probe_chi_E(E, R, dm, C, dR, dE, i, label):
+    probe = np.linspace(0.8,1.2,100)*E
+    dm_c = np.full(probe.shape+dm.shape, dm)
+    dE_c = np.full(probe.shape, dE)
+    C_c = np.full(probe.shape+C.shape, C)
+    chi = chi_sq(probe, R, dE_c, dR, C_c, dm_c)
+
+    plt.rcParams.update({'font.size':24})
+    fig = plt.figure(figsize=(20,13), facecolor= 'white')
+    ax = fig.subplots(1,1)
+    ax.plot(probe, chi, color='black')
+    ax.axvline(E,-10,10)
+    ax.set_ylim([min(chi)-0.2*max(chi), 1.1*max(chi)])
+    ax.set_xlabel(label)
+    ax.set_ylabel('$\chi^2$')
+
+    pic = label.replace(' ', '_')
+    picp = 'pictures/' + pic + '_iteration_' + str(i)
+    plt.savefig(picp, dpi = 150, bbox_inches='tight')
+
+
+def result_hist(x, iter, label, xlim = None):
+    std = np.std(x)
+
+    plt.rcParams.update({'font.size':24})
+    fig = plt.figure(figsize=(20,14), facecolor = 'white')
+    ax = fig.subplots(1,1)
+    ax.hist(x, bins='auto', label='$\sigma$ = {}'.format(std))
+    ax.legend()
+    ax.tick_params(axis='y', which='both', left=False, right=False, labelleft=False)
+    ax.set_xlabel(label)
+    for n, l in enumerate(ax.xaxis.get_ticklabels()):
+        if n % 3 != 0:
+            l.set_visible(False)
+
+    if xlim is not None:
+        if hasattr(xlim,'__len__'):
+            if len(xlim) == 2:
+                ax.set_xlim(xlim)
+            else:
+                raise ValueError('More than 2 values for xlim')
+        else:
+            ax.set_xlim(0,xlim)
+
+    pic = label.replace(' ', '_')
+    picp = 'pictures/' + pic + '_iteration_' + str(iter)
+    plt.savefig(picp, dpi = 150, bbox_inches='tight')
+
+
 def main():
     # set a max loop limit if we don't converge
-    convergence_limit = 2000
+    convergence_limit = 10000
     # the path where the data is saved
     dir = 'data/'
     mock = dir + 'mock_data.h5'
     model_path = dir + 'green2020_nn_model.h5'
     saving = dir + 'mock_result.h5'
-    test = False
+    test = 'dR'
 
     #TODO Maybe lower rho as iterations go on?
     rho = [4e-1,4e-4,4e-1,4e-1]
@@ -316,17 +365,34 @@ def main():
     dE = []
     chi = []
 
-    if test:
-        dE_temp = calculate_E(BdR[-1], E[-1], BR[-1], C, dm)
-        dE.append(dE_temp)
-        diff = dE[-1] - dr_mock
-        print(np.sum(diff))
-
     # set an inital value for lambdas
     l1, l2, l3, l4 = [1], [1], [1], [1]
 
+    if test == 'dE':
+        dE_temp = calculate_E(BdR[-1], E[-1], BR[-1], C, dm)
+        dE.append(dE_temp)
+        diff = dE[-1] - dr_mock
+        result_hist(diff, 0, 'Difference fitted dE real dE')
+        sample = 100
+        la = 'Reddening Variation Star ' + str(sample)
+        probe_chi_E(dE[-1][sample], BdR[-1], dm[sample], C[sample], BR[-1], E[-1][sample], 0, la)
+
+        return 0
+
+    if test == 'dR':
+        dE.append(dr_mock)
+        for i in range(100):
+            BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, mC, Cm, l1[-1], l2[-1], rho[:2], B_inv)
+            BdR.append(BdR_temp)
+            l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0],B_inv)
+            l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1])
+            l1.append(l_1)
+            l2.append(l_2)
+        print(BdR[-1]-dR_mock)
+
+        return 0
+
     for i in range(convergence_limit):
-        if test: break
         # calculate the root of chi_sq for dE
         dE_temp = calculate_E(BdR[-1], E[-1], BR[-1], C, dm)
         dE.append(dE_temp)
@@ -353,7 +419,7 @@ def main():
         # Progress
         chi_t = chi_sq(E[-1], BR[-1], dE[-1], BdR[-1], C, dm)
         chi.append(chi_t)
-        if i%25 == 0:
+        if i%(convergence_limit//20) == 0:
             print(f'Iteration {i} Complete')
 
 
