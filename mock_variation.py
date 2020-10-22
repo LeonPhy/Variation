@@ -8,6 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import h5py
 import json
+import sys
 import silence_tensorflow.auto
 import tensorflow as tf
 from scipy.optimize import minimize
@@ -55,8 +56,8 @@ def guess_dR(BR, B, B_inv):
     y = x[:] - b[None]
 
     # norm it to 1 and transform it to mag/color space
-    y /= np.dot(y,y)**0.5
     BdR = np.einsum('ij,j->i',B,y)
+    BdR /= np.dot(BdR,BdR)**0.5
 
     return BdR
 
@@ -142,8 +143,9 @@ def lagrangian(R2, l1, l2, rho, B_inv, R1, EEC, EmC, ECm, ECR, ERC, RCm, mCR, RC
     return lag
 
 
-def calculate_R(R, E, dR, dE, C, m, mC, Cm, l1, l2, rho, B_inv):
+def calculate_R(R, E, dR, dE, C, m, l1, l2, rho, B_inv):
     # calculate terms of chi_sq if R (reddening or variation) is the variables
+    mCm, mC, Cm = calculate_pre_loop(m,C)
     RC = dE[:,None]*np.einsum('i,nij->nj',dR,C)
     CR = dE[:,None]*np.einsum('nij,j->ni',C,dR)
     RCm = dE*np.einsum('i,ni->n',dR,Cm)
@@ -162,6 +164,11 @@ def calculate_R(R, E, dR, dE, C, m, mC, Cm, l1, l2, rho, B_inv):
 
     partial = (EEC, EmC, ECm, ECR, ERC, RCm, mCR, RCR)
     arg = (l1, l2, rho, B_inv, dR) + partial
+
+    co1 = lagrangian(R, 0, 0, [0,0], B_inv, dR, *partial) + mCm
+    co2 = np.sum(chi_sq(E, R, dE, dR, C, m))
+    if not np.allclose(co1,co2):
+        print("Values differ by ",co1-co2)
 
     # minimizing the augmented lagranian with respect to R and append the solution
     with np.errstate(divide='ignore', invalid='ignore'):
@@ -289,7 +296,7 @@ def prepare_data(d, nn):
 
 
 def probe_chi_E(E, R, dm, C, dR, dE, i, label):
-    probe = np.linspace(0.8,1.2,100)*E
+    probe = np.linspace(0.7,1.3,100)*E
     dm_c = np.full(probe.shape+dm.shape, dm)
     dE_c = np.full(probe.shape, dE)
     C_c = np.full(probe.shape+C.shape, C)
@@ -299,13 +306,41 @@ def probe_chi_E(E, R, dm, C, dR, dE, i, label):
     fig = plt.figure(figsize=(20,13), facecolor= 'white')
     ax = fig.subplots(1,1)
     ax.plot(probe, chi, color='black')
-    ax.axvline(E,-10,10)
+    ax.axvline(E,-10,100)
     ax.set_ylim([min(chi)-0.2*max(chi), 1.1*max(chi)])
     ax.set_xlabel(label)
     ax.set_ylabel('$\chi^2$')
 
     pic = label.replace(' ', '_')
     picp = 'pictures/' + pic + '_iteration_' + str(i)
+    plt.savefig(picp, dpi = 150, bbox_inches='tight')
+
+
+def probe_R(R, R_real, c, name):
+    plt.rcParams.update({'font.size':24})
+    fig = plt.figure(figsize=(20,13), facecolor= 'white')
+    ax = fig.subplots(1,1)
+    ax.plot(range(len(c)), c, color='black')
+    ax.axhline(1,-1,110)
+    ax.set_xlim(-1,110)
+    ax.set_ylabel('Iteration')
+    ax.set_xlabel('Dotproduct of fitted ' + name + ' and real ' + name)
+
+    pic = name.replace(' ', '_')
+    picp = 'pictures/' + pic + '_Dot'
+    plt.savefig(picp, dpi = 150, bbox_inches='tight')
+
+    plt.rcParams.update({'font.size':24})
+    fig = plt.figure(figsize=(20,13), facecolor= 'white')
+    ax = fig.subplots(1,1)
+    ax.plot(range(len(R)), R-R_real)
+    ax.axhline(0,-2,len(R)+2)
+    ax.set_xlim(-2,len(R)+2)
+    ax.set_ylabel('Difference of fitted ' + name + ' and real ' + name)
+    ax.set_xlabel('Iteration')
+
+    pic = name.replace(' ', '_')
+    picp = 'pictures/' + pic + '_Difference'
     plt.savefig(picp, dpi = 150, bbox_inches='tight')
 
 
@@ -319,10 +354,11 @@ def result_hist(x, iter, label, xlim = None):
     ax.legend()
     ax.tick_params(axis='y', which='both', left=False, right=False, labelleft=False)
     ax.set_xlabel(label)
+    """
     for n, l in enumerate(ax.xaxis.get_ticklabels()):
         if n % 3 != 0:
             l.set_visible(False)
-
+    """
     if xlim is not None:
         if hasattr(xlim,'__len__'):
             if len(xlim) == 2:
@@ -345,7 +381,17 @@ def main():
     mock = dir + 'mock_data.h5'
     model_path = dir + 'green2020_nn_model.h5'
     saving = dir + 'mock_result.h5'
-    test = 'dR'
+    tests = ['dE','E','dR','R','dEdR']
+    test = ''
+    sample = 900
+
+    if len(sys.argv) == 2:
+        if sys.argv[1] in tests:
+            test = sys.argv[1]
+        else:
+            print("Only arguments accepted are: ", tests)
+    else:
+        print("Only 1 of ", tests, " can be passed")
 
     #TODO Maybe lower rho as iterations go on?
     rho = [4e-1,4e-4,4e-1,4e-1]
@@ -354,9 +400,6 @@ def main():
     data, r_fit, R_mock, dr_mock, dR_mock = read_out(mock)
     nn_model = tf.keras.models.load_model(model_path)
     dm, C, BR_m, B, B_inv = prepare_data(data, nn_model)
-
-    # calculate the terms that only depend on the mag (which is constant through iterations)
-    mcm, mC, Cm = calculate_pre_loop(dm, C)
 
     # prepare the list that saved the values for each iteration (!!we fit for BR/BdR!!)
     BR = [BR_m]
@@ -369,35 +412,93 @@ def main():
     l1, l2, l3, l4 = [1], [1], [1], [1]
 
     if test == 'dE':
+        BdR.append(dR_mock)
+        BR.append(R_mock)
         dE_temp = calculate_E(BdR[-1], E[-1], BR[-1], C, dm)
         dE.append(dE_temp)
         diff = dE[-1] - dr_mock
         result_hist(diff, 0, 'Difference fitted dE real dE')
-        sample = 100
         la = 'Reddening Variation Star ' + str(sample)
         probe_chi_E(dE[-1][sample], BdR[-1], dm[sample], C[sample], BR[-1], E[-1][sample], 0, la)
 
         return 0
 
+    if test == 'E':
+        BdR.append(dR_mock)
+        BR.append(R_mock)
+        dE.append(dr_mock)
+        E_temp = calculate_E(BR[-1], dE[-1], BdR[-1], C, dm)
+        E.append(E_temp)
+        diff = E[-1] - r_fit
+        result_hist(diff, 0, 'Difference fitted E real E')
+        la = 'Reddening Star ' + str(sample)
+        probe_chi_E(E[-1][sample], BR[-1], dm[sample], C[sample], BdR[-1], dE[-1][sample], 0, la)
+
+        return 0
+
     if test == 'dR':
         dE.append(dr_mock)
+        BR.append(R_mock)
+        te = np.zeros((100,))
         for i in range(100):
-            BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, mC, Cm, l1[-1], l2[-1], rho[:2], B_inv)
+            BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2], B_inv)
             BdR.append(BdR_temp)
             l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0],B_inv)
             l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1])
             l1.append(l_1)
             l2.append(l_2)
-        print(BdR[-1]-dR_mock)
+            te[i] = np.dot(BdR[-1],dR_mock)
+        probe_R(BdR, dR_mock, te, 'dR')
 
         return 0
+
+    if test == 'R':
+        dE.append(dr_mock)
+        BdR.append(dR_mock)
+        te = np.zeros((100,))
+        for i in range(100):
+            BR_temp = calculate_R(BR[-1], E[-1], BdR[-1], dE[-1], C, dm, l3[-1], l4[-1], rho[2:], B_inv)
+            BR.append(BR_temp)
+            l_3 = l3[-1] + constraint_ortho(BR[-1], BdR[-1], rho[2], B_inv)
+            l_4 = l4[-1] + constraint_unity(BR[-1], rho[3])
+            l3.append(l_3)
+            l4.append(l_4)
+            te[i] = np.dot(BR[-1], R_mock)
+        probe_R(BR, R_mock, te, 'R')
+        print(BR[-1]-R_mock)
+        print(np.dot(R_mock, R_mock), np.dot(BR[-1],BR[-1]))
+
+        return 0
+
+    if test == 'dEdR':
+        BR.append(R_mock)
+        te = np.zeros((101,))
+        for i in range(101):
+            dE_temp = calculate_E(BdR[-1], E[-1], BR[-1], C, dm)
+            dE.append(dE_temp)
+            if i%20==0:
+                diff = dE[-1] - dr_mock
+                result_hist(diff, i, 'Difference fitted dE real dE')
+                la = 'Reddening Variation Star ' + str(sample)
+                probe_chi_E(dE[-1][sample], BdR[-1], dm[sample], C[sample], BR[-1], E[-1][sample], i, la)
+            BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2], B_inv)
+            BdR.append(BdR_temp)
+            l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0],B_inv)
+            l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1])
+            l1.append(l_1)
+            l2.append(l_2)
+            te[i] = np.dot(BdR[-1],dR_mock)
+        probe_R(BdR, dR_mock, te, 'dR with dE')
+
+        return 0
+
 
     for i in range(convergence_limit):
         # calculate the root of chi_sq for dE
         dE_temp = calculate_E(BdR[-1], E[-1], BR[-1], C, dm)
         dE.append(dE_temp)
         # calculate the terms of chi_sq when fitting for dR, that are independant of dR
-        BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, mC, Cm, l1[-1], l2[-1], rho[:2], B_inv)
+        BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2], B_inv)
         BdR.append(BdR_temp)
         # update lambda_1 and _2 according to the constraints and append
         l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0],B_inv)
@@ -408,11 +509,11 @@ def main():
         # calculate the root of chi_sq for E and append
         E_temp = calculate_E(BR[-1], dE[-1], BdR[-1], C, dm)
         E.append(E_temp)
-        BR_temp = calculate_R(BR[-1], E[-1], BdR[-1], dE[-1], C, dm, mC, Cm, l3[-1], l4[-1], rho[2:], B_inv)
+        BR_temp = calculate_R(BR[-1], E[-1], BdR[-1], dE[-1], C, dm, l3[-1], l4[-1], rho[2:], B_inv)
         BR.append(BR_temp)
         # update lambda_3 and _4 according to the constraints and append
         l_3 = l3[-1] + constraint_ortho(BdR[-1],BR[-1],rho[2],B_inv)
-        l_4 = l4[-1] + constraint_unity(BR[-1],rho[3])
+        l_4 = l4[-1] + constraint_unity(BR[-1], rho[3])
         l3.append(l_3)
         l4.append(l_4)
 

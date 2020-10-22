@@ -20,7 +20,7 @@ def read_out(path):
     return d, r
 
 
-def save(path, d, r, R, dr, dR):
+def save(path, d, d0, r, R, dr, dR):
     # save the mock data set with the used R, E, dR, dE
     with h5py.File(path, 'w') as f:
         f.create_dataset('/data', data=d, chunks=True, compression='gzip', compression_opts=3)
@@ -28,6 +28,8 @@ def save(path, d, r, R, dr, dR):
         f.create_dataset('/R', data=R, chunks=True, compression='gzip', compression_opts=3)
         f.create_dataset('/dr_fit', data=dr, chunks=True, compression='gzip', compression_opts=3)
         f.create_dataset('/dR', data=dR, chunks=True, compression='gzip', compression_opts=3)
+        f.create_dataset('/data_no_noise', data=d0, chunks=True, compression='gzip', compression_opts=3)
+
 
 def guess_dR(R):
     # read out the mean wavelengths of the 13 filters
@@ -43,7 +45,9 @@ def guess_dR(R):
     # add a factor to scale the reddening vector so our initial guess is not the same
     y *= 0.4
     # norm it to 1
+    y[1:] -= y[0]
     y /= np.dot(y,y)**0.5
+    y[1:] += y[0]
 
     return y
 
@@ -135,7 +139,39 @@ def mock_m(d, r, nn, seed = 14, max = 0.1):
 
     d['mag_err'] = m_err
 
-    return R, dE, dR
+    return BR, dE, BdR
+
+
+def noise(d, seed = 14):
+    """
+
+    """
+    #
+    rng = np.random.default_rng(seed)
+
+    # create array where the noiseless values are saved
+    dtype = [
+        ('mag','13f4'),
+        ('atm_param_p','3f4'),
+        ('parallax','f4')
+    ]
+
+    d0 = np.empty(d.size, dtype=dtype)
+
+    for type, _ in dtype:
+        d0[type] = d[type]
+        norm = rng.normal(size=d[type].shape)
+        if type == 'atm_param_p':
+            for k in range(3):
+                d[type][:,k] += norm[:,k]*d['atm_param_cov_p'][:,k,k]
+        else:
+            err = type + '_err'
+            d[type] += norm*d[err]
+
+    check = (d['parallax'] < 0)
+    print(np.sum(check), ' parallaxes went negative')
+
+    return d0
 
 
 def main():
@@ -164,7 +200,8 @@ def main():
 
     # calculate R, dR and dE and replace mag and mag_err in the dataset
     R, dr, dR = mock_m(d, r, nn_model)
-    save(mock, d, r, R, dr, dR)
+    d0 = noise(d)
+    save(mock, d, d0, r, R, dr, dR)
 
     return 0
 
