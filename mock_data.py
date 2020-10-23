@@ -113,6 +113,9 @@ def mock_m(d, r, nn, seed = 14, max = 0.1):
     R_all = predict_R(d['atm_param_p'], nn)
     R = np.mean(R_all, axis=0)
     BR = np.einsum('ij,j->i',B,R)
+    r *= np.dot(BR,BR)**0.5
+    R /= np.dot(BR,BR)**0.5
+    BR /= np.dot(BR,BR)**0.5
 
     # predict m from theta and take parallax and reddening into account for m
     m = predict_M(d['atm_param_p'], nn)
@@ -138,6 +141,7 @@ def mock_m(d, r, nn, seed = 14, max = 0.1):
         m_err[idx] = replace
 
     d['mag_err'] = m_err
+    r /= np.dot(BR,BR)**0.5
 
     return BR, dE, BdR
 

@@ -111,7 +111,7 @@ def constraint_ortho(R, dR, l1 = None, B_inv = None):
 
 def constraint_unity(R, l2 = None):
     # constraint that is f(R) - b
-    con = (np.dot(R,R)**0.5 - 1)
+    con = (np.dot(R,R) - 1)
 
     if l2 is not None:
         con *= l2
@@ -119,7 +119,7 @@ def constraint_unity(R, l2 = None):
     return con
 
 
-def lagrangian(R2, l1, l2, rho, B_inv, R1, EEC, EmC, ECm, ECR, ERC, RCm, mCR, RCR):
+def lagrangian(R2, l1, l2, n, rho, B_inv, R1, EEC, EmC, ECm, ECR, ERC, RCm, mCR, RCR):
     # calculate the terms that depend on the varibale we minimize for in chi_sq
     rCr = np.einsum('i,ij,j',R2,EEC,R2)
     mCr = np.dot(EmC,R2)
@@ -138,7 +138,7 @@ def lagrangian(R2, l1, l2, rho, B_inv, R1, EEC, EmC, ECm, ECR, ERC, RCm, mCR, RC
     con = con_1 + con_2
     pen = pen_1 + pen_2
     # calculate the augmented lagranian
-    lag = chi + con + pen
+    lag = chi/n + con + pen
 
     return lag
 
@@ -151,6 +151,7 @@ def calculate_R(R, E, dR, dE, C, m, l1, l2, rho, B_inv):
     RCm = dE*np.einsum('i,ni->n',dR,Cm)
     mCR = dE*np.einsum('ni,i->n',mC,dR)
     RCR = dE*np.einsum('i,ni->n',dR,CR)
+    n = len(E)
 
     # sum each term over all data points so the scipy method doesn't do the calculations
     EEC = np.sum(E[:,None,None]**2*C, axis=0)
@@ -163,10 +164,10 @@ def calculate_R(R, E, dR, dE, C, m, l1, l2, rho, B_inv):
     RCR = np.sum(RCR, axis=0)
 
     partial = (EEC, EmC, ECm, ECR, ERC, RCm, mCR, RCR)
-    arg = (l1, l2, rho, B_inv, dR) + partial
+    arg = (l1, l2, n, rho, B_inv, dR) + partial
 
-    co1 = lagrangian(R, 0, 0, [0,0], B_inv, dR, *partial) + mCm
-    co2 = np.sum(chi_sq(E, R, dE, dR, C, m))
+    co1 = lagrangian(R, 0, 0, n, [0,0], B_inv, dR, *partial) + mCm/n
+    co2 = np.sum(chi_sq(E, R, dE, dR, C, m))/n
     if not np.allclose(co1,co2):
         print("Values differ by ",co1-co2)
 
@@ -174,6 +175,8 @@ def calculate_R(R, E, dR, dE, C, m, l1, l2, rho, B_inv):
     with np.errstate(divide='ignore', invalid='ignore'):
         res = minimize(lagrangian, R, arg)
 
+
+    print(constraint_unity(res.x)+1, constraint_ortho(res.x,dR,B_inv=B_inv))
     return res.x
 
 
@@ -321,8 +324,8 @@ def probe_R(R, R_real, c, name):
     fig = plt.figure(figsize=(20,13), facecolor= 'white')
     ax = fig.subplots(1,1)
     ax.plot(range(len(c)), c, color='black')
-    ax.axhline(1,-1,110)
-    ax.set_xlim(-1,110)
+    ax.axhline(1,-1,int(1.1*len(c)))
+    ax.set_xlim(-1,int(1.1*len(c)))
     ax.set_ylabel('Iteration')
     ax.set_xlabel('Dotproduct of fitted ' + name + ' and real ' + name)
 
@@ -333,9 +336,9 @@ def probe_R(R, R_real, c, name):
     plt.rcParams.update({'font.size':24})
     fig = plt.figure(figsize=(20,13), facecolor= 'white')
     ax = fig.subplots(1,1)
-    ax.plot(range(len(R)), R-R_real)
-    ax.axhline(0,-2,len(R)+2)
-    ax.set_xlim(-2,len(R)+2)
+    ax.plot(np.linspace(1,len(R)-1,len(R)-1), R[1:]-R_real)
+    ax.axhline(0,1,int(1.05*len(R)),color='black')
+    ax.set_xlim(1,int(1.05*len(R)))
     ax.set_ylabel('Difference of fitted ' + name + ' and real ' + name)
     ax.set_xlabel('Iteration')
 
@@ -376,6 +379,9 @@ def result_hist(x, iter, label, xlim = None):
 def main():
     # set a max loop limit if we don't converge
     convergence_limit = 10000
+    test_len = 100
+    sample = 900
+
     # the path where the data is saved
     dir = 'data/'
     mock = dir + 'mock_data.h5'
@@ -383,23 +389,24 @@ def main():
     saving = dir + 'mock_result.h5'
     tests = ['dE','E','dR','R','dEdR']
     test = ''
-    sample = 900
 
     if len(sys.argv) == 2:
         if sys.argv[1] in tests:
             test = sys.argv[1]
         else:
             print("Only arguments accepted are: ", tests)
-    else:
+    elif len(sys.argv) > 2:
         print("Only 1 of ", tests, " can be passed")
 
     #TODO Maybe lower rho as iterations go on?
-    rho = [4e-1,4e-4,4e-1,4e-1]
+    rho = [4e-1,4e-1,4e-1,4e-1]
 
     # read out the data, Neural Network and prepare the data with the Neural Network
     data, r_fit, R_mock, dr_mock, dR_mock = read_out(mock)
     nn_model = tf.keras.models.load_model(model_path)
     dm, C, BR_m, B, B_inv = prepare_data(data, nn_model)
+    r_fit *= np.dot(BR_m, BR_m)**0.5
+    BR_m /= np.dot(BR_m, BR_m)**0.5
 
     # prepare the list that saved the values for each iteration (!!we fit for BR/BdR!!)
     BR = [BR_m]
@@ -409,7 +416,7 @@ def main():
     chi = []
 
     # set an inital value for lambdas
-    l1, l2, l3, l4 = [1], [1], [1], [1]
+    l1, l2, l3, l4 = [0], [0], [0], [0]
 
     if test == 'dE':
         BdR.append(dR_mock)
@@ -437,10 +444,10 @@ def main():
         return 0
 
     if test == 'dR':
-        dE.append(dr_mock)
+        dE.append(dr_mock+np.random.default_rng(14).normal(size=len(dr_mock))*0.04)
         BR.append(R_mock)
-        te = np.zeros((100,))
-        for i in range(100):
+        te = np.zeros((test_len,))
+        for i in range(test_len):
             BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2], B_inv)
             BdR.append(BdR_temp)
             l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0],B_inv)
@@ -449,14 +456,13 @@ def main():
             l2.append(l_2)
             te[i] = np.dot(BdR[-1],dR_mock)
         probe_R(BdR, dR_mock, te, 'dR')
-
         return 0
 
     if test == 'R':
         dE.append(dr_mock)
         BdR.append(dR_mock)
-        te = np.zeros((100,))
-        for i in range(100):
+        te = np.zeros((test_len,))
+        for i in range(test_len):
             BR_temp = calculate_R(BR[-1], E[-1], BdR[-1], dE[-1], C, dm, l3[-1], l4[-1], rho[2:], B_inv)
             BR.append(BR_temp)
             l_3 = l3[-1] + constraint_ortho(BR[-1], BdR[-1], rho[2], B_inv)
@@ -472,8 +478,8 @@ def main():
 
     if test == 'dEdR':
         BR.append(R_mock)
-        te = np.zeros((101,))
-        for i in range(101):
+        te = np.zeros((test_len,))
+        for i in range(test_len):
             dE_temp = calculate_E(BdR[-1], E[-1], BR[-1], C, dm)
             dE.append(dE_temp)
             if i%20==0:
