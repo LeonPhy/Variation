@@ -113,7 +113,6 @@ def mock_m(d, r, nn, seed = 14, max = 0.1):
     R_all = predict_R(d['atm_param_p'], nn)
     R = np.mean(R_all, axis=0)
     BR = np.einsum('ij,j->i',B,R)
-    r /= np.dot(BR,BR)**0.5
     BR /= np.dot(BR,BR)**0.5
 
     # predict m from theta and take parallax and reddening into account for m
@@ -140,6 +139,8 @@ def mock_m(d, r, nn, seed = 14, max = 0.1):
         m_err[idx] = replace
 
     d['mag_err'] = m_err
+    print(np.dot(BR,BR))
+    print(np.dot(R,dR))
 
     return BR, dE, BdR
 
@@ -150,7 +151,7 @@ def noise(d, seed = 14):
     """
     #
     rng = np.random.default_rng(seed)
-
+    d1 = d.copy()
 
     # create array where the noiseless values are saved
     dtype = [
@@ -162,19 +163,19 @@ def noise(d, seed = 14):
     d0 = np.empty(d.size, dtype=dtype)
 
     for type, _ in dtype:
-        d0[type] = d[type]
-        norm = rng.normal(size=d[type].shape)
+        d0[type] = d1[type]
+        norm = rng.normal(size=d1[type].shape)
         if type == 'atm_param_p':
             for k in range(3):
-                d[type][:,k] += norm[:,k]*d['atm_param_cov_p'][:,k,k]
+                d1[type][:,k] += norm[:,k]*d1['atm_param_cov_p'][:,k,k]
         else:
             err = type + '_err'
-            d[type] += norm*d[err]
+            d1[type] += norm*d[err]
 
-    check = (d['parallax'] < 0)
+    check = (d1['parallax'] < 0)
     print(np.sum(check), ' parallaxes went negative')
 
-    return d0
+    return d0, d1
 
 
 def main():
@@ -203,8 +204,8 @@ def main():
 
     # calculate R, dR and dE and replace mag and mag_err in the dataset
     R, dr, dR = mock_m(d, r, nn_model)
-    d0 = noise(d)
-    save(mock, d, d0, r, R, dr, dR)
+    d0, d1 = noise(d)
+    save(mock, d1, d0, r, R, dr, dR)
 
     return 0
 

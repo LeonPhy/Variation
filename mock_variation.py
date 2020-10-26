@@ -176,7 +176,7 @@ def calculate_R(R, E, dR, dE, C, m, l1, l2, rho, B_inv):
         res = minimize(lagrangian, R, arg)
 
 
-    print(constraint_unity(res.x)+1, constraint_ortho(res.x,dR,B_inv=B_inv))
+    #print(constraint_unity(res.x)+1, constraint_ortho(res.x,dR,B_inv=B_inv))
     return res.x
 
 
@@ -268,7 +268,8 @@ def prepare_data(d, nn):
         | (d['parallax'] < 1.e-8)
         | ~np.isfinite(d['parallax'])
         | ~np.isfinite(d['parallax_err'])
-            )
+    )
+
     cov_m[idx,0,0] = large_err**2
     m[idx,0] = np.nanmedian(m[:,0])
 
@@ -309,8 +310,10 @@ def probe_chi_E(E, R, dm, C, dR, dE, i, label):
     fig = plt.figure(figsize=(20,13), facecolor= 'white')
     ax = fig.subplots(1,1)
     ax.plot(probe, chi, color='black')
-    ax.axvline(E,-10,100)
+    ax.axvline(E,-10,100,color='red',alpha=0.6)
+    ax.axhline(min(chi),-1,10,color='red',alpha=0.6)
     ax.set_ylim([min(chi)-0.2*max(chi), 1.1*max(chi)])
+    ax.set_xlim([min(probe)*0.95, max(probe)*1.05])
     ax.set_xlabel(label)
     ax.set_ylabel('$\chi^2$')
 
@@ -378,8 +381,8 @@ def result_hist(x, iter, label, xlim = None):
 
 def main():
     # set a max loop limit if we don't converge
-    convergence_limit = 10000
-    test_len = 100
+    convergence_limit = 1000
+    test_len = 101
     sample = 900
 
     # the path where the data is saved
@@ -444,7 +447,7 @@ def main():
         return 0
 
     if test == 'dR':
-        dE.append(dr_mock+np.random.default_rng(14).normal(size=len(dr_mock))*0.04)
+        dE.append(dr_mock+np.random.default_rng(14).normal(size=len(dr_mock))*0.1*np.mean(dr_mock))
         BR.append(R_mock)
         te = np.zeros((test_len,))
         for i in range(test_len):
@@ -456,10 +459,12 @@ def main():
             l2.append(l_2)
             te[i] = np.dot(BdR[-1],dR_mock)
         probe_R(BdR, dR_mock, te, 'dR')
+
         return 0
 
     if test == 'R':
         dE.append(dr_mock)
+        E[-1] += np.random.default_rng(14).normal(size=len(E[-1]))*0.1*np.mean(E[-1])
         BdR.append(dR_mock)
         te = np.zeros((test_len,))
         for i in range(test_len):
@@ -471,8 +476,7 @@ def main():
             l4.append(l_4)
             te[i] = np.dot(BR[-1], R_mock)
         probe_R(BR, R_mock, te, 'R')
-        print(BR[-1]-R_mock)
-        print(np.dot(R_mock, R_mock), np.dot(BR[-1],BR[-1]))
+        print(np.dot(R_mock,BR[-1]))
 
         return 0
 
@@ -482,7 +486,7 @@ def main():
         for i in range(test_len):
             dE_temp = calculate_E(BdR[-1], E[-1], BR[-1], C, dm)
             dE.append(dE_temp)
-            if i%20==0:
+            if i%50==0:
                 diff = dE[-1] - dr_mock
                 result_hist(diff, i, 'Difference fitted dE real dE')
                 la = 'Reddening Variation Star ' + str(sample)
