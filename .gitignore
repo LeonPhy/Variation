@@ -40,4 +40,5 @@ Thumbs.db
 #####
 *.h5
 *.png
-*.ipynb*
+*.ipynb
+*.ipynb_checkpoints
