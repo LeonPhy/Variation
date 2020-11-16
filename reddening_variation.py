@@ -6,13 +6,13 @@ Predicting reddening and variation through chi_sq minimization of diff. between 
 
 import numpy as np
 import matplotlib.pyplot as plt
+import argparse
 import h5py
 import json
 import sys
 import silence_tensorflow.auto
 import tensorflow as tf
 from scipy.optimize import minimize
-
 
 def read_out(path):
     # read out the test data set
@@ -24,14 +24,12 @@ def read_out(path):
             dr = f['dr_fit'][:]
             dR = f['dR'][:]
         else:
-            R = []
-            dr = []
-            dR = []
+            R, dr, dR = None, None, None
 
     return d, r, R, dr, dR
 
 
-def save(path, r, R, dr, dR, l, m , C, chi_sq):
+def save(path, r, R, dr, dR, l, dm , C, chi_sq, c):
     # save the mock data run
     with h5py.File(path, 'w') as f:
         f.create_dataset('/E', data=r, chunks=True, compression='gzip', compression_opts=3)
@@ -39,9 +37,10 @@ def save(path, r, R, dr, dR, l, m , C, chi_sq):
         f.create_dataset('/R', data=R, chunks=True, compression='gzip', compression_opts=3)
         f.create_dataset('/dR', data=dR, chunks=True, compression='gzip', compression_opts=3)
         f.create_dataset('/l', data=l, chunks=True, compression='gzip', compression_opts=3)
-        f.create_dataset('/dm', data=m, chunks=True, compression='gzip', compression_opts=3)
+        f.create_dataset('/dm', data=dm, chunks=True, compression='gzip', compression_opts=3)
         f.create_dataset('/C', data=C, chunks=True, compression='gzip', compression_opts=3)
         f.create_dataset('/chi', data=chi_sq, chunks=True, compression='gzip', compression_opts=3)
+        f.create_dataset('/con', data=c, chunks=True, compression='gzip', compression_opts=3)
 
 def guess_dR(BR, B, B_inv):
     # read out the mean wavelengths of the 13 filters we use
@@ -229,6 +228,7 @@ def prepare_data(d, nn):
         The maxtrix to transform from mag/color -> mag space
     """
     n_stars, n_bands = d['mag'].shape
+    dof = n_stars*(n_bands-2)
     large_err = 999.
     # define the partial model to predict BM
     inputs = nn.get_layer('theta').input
@@ -241,8 +241,8 @@ def prepare_data(d, nn):
     # fill the cov. matrix with the observed mag errors, replace nans with median and large errors
     for b in range(n_bands):
         cov_m[:,b,b] = d['mag_err'][:,b]**2
-
         idx = ~np.isfinite(m[:,b]) | ~np.isfinite(cov_m[:,b,b])
+        dof -= np.sum(idx)
         m[idx,b] = np.nanmedian(m[:,b])
         cov_m[idx,b,b] = large_err**2.
 
@@ -270,6 +270,7 @@ def prepare_data(d, nn):
         | ~np.isfinite(d['parallax_err'])
     )
 
+    dof -= np.sum(idx)
     cov_m[idx,0,0] = large_err**2
     m[idx,0] = np.nanmedian(m[:,0])
 
@@ -277,6 +278,7 @@ def prepare_data(d, nn):
     R = predict_R(d['atm_param_p'], nn)
     BR = np.einsum('ij,nj->ni',B,R)
     R_mean = np.mean(BR, axis=0)
+    # R_mean += np.random.default_rng(10).normal(size=R_mean.shape)
 
     # calculate the gradient of predicting BM for the covariance matrix
     with tf.GradientTape() as g:
@@ -296,16 +298,61 @@ def prepare_data(d, nn):
     dm = B_M_model(d['atm_param_p']).numpy()
     dm -= m
 
-    return dm, C, R_mean, B, B_inv
+    return dm, C, R_mean, B, B_inv, dof
+
+
+def result_hist(x, iter, label, prefix, xlim = None):
+    # plot the result histogram and calculate mean and std of the values
+    plt.rcParams.update({'font.size':24})
+    fig = plt.figure(figsize=(20,14), facecolor = 'white')
+    ax = fig.subplots(1,1)
+    std = np.std(x)
+    mean = np.mean(x)
+    ax.hist(x, bins='auto', label='$\sigma$ = {} \n $\mu$ = {}'.format(round(std,3),round(mean,3)))
+    ax.legend()
+    ax.tick_params(axis='y', which='both', left=False, right=False, labelleft=False)
+    ax.set_xlabel(label)
+
+    if xlim is not None:
+        if hasattr(xlim,'__len__'):
+            if len(xlim) == 2:
+                ax.set_xlim(xlim)
+            else:
+                raise ValueError('More than 2 values for xlim')
+        else:
+            ax.set_xlim(0,xlim)
+    else:
+        lim = 1.1*max(max(x),-min(x))
+        ax.set_xlim(-lim,lim)
+
+    pic = label.replace(' ', '_')
+    picp = 'pictures/'+ prefix + pic + '_iteration_' + str(iter)
+    plt.savefig(picp, dpi = 150, bbox_inches='tight')
+
+
+def lambda_plot(l, label, prefix):
+    # plot the lambda given to the function
+    plt.rcParams.update({'font.size':24})
+    fig = plt.figure(figsize=(20,14), facecolor = 'white')
+    ax = fig.subplots(1,1)
+    ax.plot(range(len(l)), l, 'k-')
+    ax.set_ylabel(label)
+    ax.set_xlabel('Iteration')
+    ax.grid(True)
+    pic = label.replace(' ', '_')
+    picp = 'pictures/' + prefix + pic
+    plt.savefig(picp, dpi = 150, bbox_inches='tight')
 
 
 def probe_chi_E(E, R, dm, C, dR, dE, i, label):
+    # create the arrays with only varying E to probe what effect small changes in it make on chi
     probe = np.linspace(0.7,1.3,100)*E
     dm_c = np.full(probe.shape+dm.shape, dm)
     dE_c = np.full(probe.shape, dE)
     C_c = np.full(probe.shape+C.shape, C)
     chi = chi_sq(probe, R, dE_c, dR, C_c, dm_c)
 
+    # a simple plot for the range we probed with 2 lines indidcated the minimum chi and E
     plt.rcParams.update({'font.size':24})
     fig = plt.figure(figsize=(20,13), facecolor= 'white')
     ax = fig.subplots(1,1)
@@ -322,7 +369,8 @@ def probe_chi_E(E, R, dm, C, dR, dE, i, label):
     plt.savefig(picp, dpi = 150, bbox_inches='tight')
 
 
-def probe_R(R, R_real, c, name):
+def probe_R(R, ortho, unity, R_real, c, name, prefix):
+    # plot the change in the dot product of fit and real value over iterations 
     plt.rcParams.update({'font.size':24})
     fig = plt.figure(figsize=(20,13), facecolor= 'white')
     ax = fig.subplots(1,1)
@@ -336,6 +384,7 @@ def probe_R(R, R_real, c, name):
     picp = 'pictures/' + pic + '_Dot'
     plt.savefig(picp, dpi = 150, bbox_inches='tight')
 
+    # plot the difference between fit and real R's component
     plt.rcParams.update({'font.size':24})
     fig = plt.figure(figsize=(20,13), facecolor= 'white')
     ax = fig.subplots(1,1)
@@ -349,65 +398,121 @@ def probe_R(R, R_real, c, name):
     picp = 'pictures/' + pic + '_Difference'
     plt.savefig(picp, dpi = 150, bbox_inches='tight')
 
+    # plot unity and orthogonal lambda over iterations
+    ort = 'Orthogonal Lambda for ' + name
+    uni = 'Unity Lambda for ' + name
+    lambda_plot(ortho, ort, prefix)
+    lambda_plot(unity, uni, prefix)
 
-def result_hist(x, iter, label, xlim = None):
-    std = np.std(x)
 
-    plt.rcParams.update({'font.size':24})
-    fig = plt.figure(figsize=(20,14), facecolor = 'white')
-    ax = fig.subplots(1,1)
-    ax.hist(x, bins='auto', label='$\sigma$ = {}'.format(std))
-    ax.legend()
-    ax.tick_params(axis='y', which='both', left=False, right=False, labelleft=False)
-    ax.set_xlabel(label)
-    """
-    for n, l in enumerate(ax.xaxis.get_ticklabels()):
-        if n % 3 != 0:
-            l.set_visible(False)
-    """
-    if xlim is not None:
-        if hasattr(xlim,'__len__'):
-            if len(xlim) == 2:
-                ax.set_xlim(xlim)
-            else:
-                raise ValueError('More than 2 values for xlim')
-        else:
-            ax.set_xlim(0,xlim)
+def unit_tests(test, BR, BdR, E, dE, l1, l2, dm, C, rho, B_inv, test_len, prefix):
+    # the different tests possible that only solves parts on its own to verify that it is working
+    sample = 900
+    te = np.zeros((test_len,))
 
-    pic = label.replace(' ', '_')
-    picp = 'pictures/' + pic + '_iteration_' + str(iter)
-    plt.savefig(picp, dpi = 150, bbox_inches='tight')
+    if test == 'dE':
+        dE_temp = calculate_E(BdR[-1], E[-1], BR[-1], C, dm)
+        dE.append(dE_temp)
+        diff = dE[-1] - E[0]
+        result_hist(diff, 0, 'Difference fitted dE real dE', prefix)
+        la = 'Reddening Variation Star ' + str(sample)
+        probe_chi_E(dE[-1][sample], BdR[-1], dm[sample], C[sample], BR[-1], E[-1][sample], 0, la)
+
+    if test == 'E':
+        E_temp = calculate_E(BR[-1], dE[-1], BdR[-1], C, dm)
+        E.append(E_temp)
+        diff = E[-1] - r_fit
+        result_hist(diff, 0, 'Difference fitted E real E', prefix)
+        la = 'Reddening Star ' + str(sample)
+        probe_chi_E(E[-1][sample], BR[-1], dm[sample], C[sample], BdR[-1], dE[-1][sample], 0, la)
+
+    if test == 'dR':
+        # dE[-1] += np.random.default_rng(14).normal(size=len(dr_mock))*0.1*np.mean(dr_mock))
+        for i in range(test_len):
+            BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2], B_inv)
+            BdR.append(BdR_temp)
+            l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0],B_inv)
+            l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1])
+            l1.append(l_1)
+            l2.append(l_2)
+            te[i] = np.dot(BdR[-1],BdR[1])
+        probe_R(BdR, l1, l2, BdR[1], te, 'dR', prefix)
+
+    if test == 'R':
+        # E[-1] += np.random.default_rng(14).normal(size=len(E[-1]))*0.1*np.mean(E[-1])
+        for i in range(test_len):
+            BR_temp = calculate_R(BR[-1], E[-1], BdR[-1], dE[-1], C, dm, l1[-1], l2[-1], rho[2:], B_inv)
+            BR.append(BR_temp)
+            l_1 = l1[-1] + constraint_ortho(BR[-1], BdR[-1], rho[2], B_inv)
+            l_2 = l2[-1] + constraint_unity(BR[-1], rho[3])
+            l1.append(l_1)
+            l2.append(l_2)
+            te[i] = np.dot(BR[-1], BR[1])
+        probe_R(BR, l1, l2, BR[1], te, 'R', prefix)
+
+    if test == 'dEdR':
+        for i in range(test_len):
+            dE_temp = calculate_E(BdR[-1], E[-1], BR[-1], C, dm)
+            dE.append(dE_temp)
+            if i%((test_len-1)//1)==0:
+                diff = dE[-1] - dE[0]
+                result_hist(diff, i, 'Difference fitted dE real dE', prefix)
+                la = 'Reddening Variation Star ' + str(sample)
+                probe_chi_E(dE[-1][sample], BdR[-1], dm[sample], C[sample], BR[-1], E[-1][sample], i, la)
+            BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2], B_inv)
+            BdR.append(BdR_temp)
+            l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0],B_inv)
+            l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1])
+            l1.append(l_1)
+            l2.append(l_2)
+            te[i] = np.dot(BdR[-1],BdR[1])
+        probe_R(BdR, l1, l2, BdR[1], te, 'dR with dE', prefix)
+
+    if test == 'ER':
+        for i in range(test_len):
+            E_temp = calculate_E(BR[-1], dE[-1], BdR[-1], C, dm)
+            E.append(E_temp)
+            if i%((test_len-1)//1)==0:
+                diff = E[-1] - E[0]
+                result_hist(diff, i, 'Difference fitted E real E', prefix)
+                la = 'Reddening Star ' + str(sample)
+                probe_chi_E(E[-1][sample], BR[-1], dm[sample], C[sample], BdR[-1], dE[-1][sample], i, la)
+            BR_temp = calculate_R(BR[-1], E[-1], BdR[-1], dE[-1], C, dm, l1[-1], l2[-1], rho[2:], B_inv)
+            BR.append(BR_temp)
+            l_1 = l1[-1] + constraint_ortho(BR[-1],BdR[-1],rho[2],B_inv)
+            l_2 = l2[-1] + constraint_unity(BR[-1],rho[3])
+            l1.append(l_1)
+            l2.append(l_2)
+            te[i] = np.dot(BR[-1],BR[1])
+        probe_R(BR, l1, l2, BR[1], te, 'R with E', prefix)
 
 
 def main():
-    # set a max loop limit if we don't converge
-    convergence_limit = 1000
-    test_len = 101
-    sample = 900
-
     # the path where the data is saved
     dir = 'data/'
-    mock = dir + 'mock_data.h5'
     model_path = dir + 'green2020_nn_model.h5'
-    saving = dir + 'mock_result.h5'
-    tests = ['dE','E','dR','R','dEdR']
-    test = ''
-
-    if len(sys.argv) == 2:
-        if sys.argv[1] in tests:
-            test = sys.argv[1]
-        else:
-            print("Only arguments accepted are: ", tests)
-    elif len(sys.argv) > 2:
-        print("Only 1 of ", tests, " can be passed")
+    prefix = 'green2020_small_'
+    path = dir + prefix + 'data.h5'
+    saving = dir + prefix +  'result.h5'
 
     #TODO Maybe lower rho as iterations go on?
-    rho = [4e-1,4e-1,4e-1,4e-1]
+    rho = [1e-1,1e-1,1e-1,1e-0]
+    l1, l2, l3, l4 = [0], [0], [0], [0]
+
+    # resolve arguments for the unit tests; see tests for possible test
+    parser = argparse.ArgumentParser(prog='Variation Fit')
+    parser.add_argument('-t', '--test',default=None, choices=[None,'dE','E','dR','R','dEdR','ER'],
+                                     help='For testing, default value is None')
+    parser.add_argument('limit' ,default=1000, nargs='?', type=int,
+                                     help='Max iterations, default is 1000')
+    args = parser.parse_args()
+    limit = args.limit
+    test = args.test
 
     # read out the data, Neural Network and prepare the data with the Neural Network
-    data, r_fit, R_mock, dr_mock, dR_mock = read_out(mock)
+    data, r_fit, R_mock, dr_mock, dR_mock = read_out(path)
     nn_model = tf.keras.models.load_model(model_path)
-    dm, C, BR_m, B, B_inv = prepare_data(data, nn_model)
+    dm, C, BR_m, B, B_inv, dof = prepare_data(data, nn_model)
     r_fit *= np.dot(BR_m, BR_m)**0.5
     BR_m /= np.dot(BR_m, BR_m)**0.5
 
@@ -418,109 +523,50 @@ def main():
     dE = []
     chi = []
 
-    # set an inital value for lambdas
-    l1, l2, l3, l4 = [0], [0], [0], [0]
-
-    if test == 'dE':
-        BdR.append(dR_mock)
-        BR.append(R_mock)
-        dE_temp = calculate_E(BdR[-1], E[-1], BR[-1], C, dm)
-        dE.append(dE_temp)
-        diff = dE[-1] - dr_mock
-        result_hist(diff, 0, 'Difference fitted dE real dE')
-        la = 'Reddening Variation Star ' + str(sample)
-        probe_chi_E(dE[-1][sample], BdR[-1], dm[sample], C[sample], BR[-1], E[-1][sample], 0, la)
-
-        return 0
-
-    if test == 'E':
+    if test is not None:
         BdR.append(dR_mock)
         BR.append(R_mock)
         dE.append(dr_mock)
-        E_temp = calculate_E(BR[-1], dE[-1], BdR[-1], C, dm)
-        E.append(E_temp)
-        diff = E[-1] - r_fit
-        result_hist(diff, 0, 'Difference fitted E real E')
-        la = 'Reddening Star ' + str(sample)
-        probe_chi_E(E[-1][sample], BR[-1], dm[sample], C[sample], BdR[-1], dE[-1][sample], 0, la)
-
+        unit_tests(test, BR, BdR, E, dE, l1, l2, dm, C, rho, B_inv, limit, prefix)
         return 0
 
-    if test == 'dR':
-        dE.append(dr_mock+np.random.default_rng(14).normal(size=len(dr_mock))*0.1*np.mean(dr_mock))
-        BR.append(R_mock)
-        te = np.zeros((test_len,))
-        for i in range(test_len):
-            BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2], B_inv)
-            BdR.append(BdR_temp)
-            l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0],B_inv)
-            l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1])
-            l1.append(l_1)
-            l2.append(l_2)
-            te[i] = np.dot(BdR[-1],dR_mock)
-        probe_R(BdR, dR_mock, te, 'dR')
+    r_dot = np.empty((limit,))
+    r_len = np.empty((limit,))
+    dr_dot = np.empty((limit,))
+    dr_len = np.empty((limit,))
+    rm_dot = np.empty((limit,))
+    drm_dot = np.empty((limit,))
+    R = np.einsum('ij,j->i',B_inv,BR[0])
 
-        return 0
-
-    if test == 'R':
-        dE.append(dr_mock)
-        E[-1] += np.random.default_rng(14).normal(size=len(E[-1]))*0.1*np.mean(E[-1])
-        BdR.append(dR_mock)
-        te = np.zeros((test_len,))
-        for i in range(test_len):
-            BR_temp = calculate_R(BR[-1], E[-1], BdR[-1], dE[-1], C, dm, l3[-1], l4[-1], rho[2:], B_inv)
-            BR.append(BR_temp)
-            l_3 = l3[-1] + constraint_ortho(BR[-1], BdR[-1], rho[2], B_inv)
-            l_4 = l4[-1] + constraint_unity(BR[-1], rho[3])
-            l3.append(l_3)
-            l4.append(l_4)
-            te[i] = np.dot(BR[-1], R_mock)
-        probe_R(BR, R_mock, te, 'R')
-        print(np.dot(R_mock,BR[-1]))
-
-        return 0
-
-    if test == 'dEdR':
-        BR.append(R_mock)
-        te = np.zeros((test_len,))
-        for i in range(test_len):
-            dE_temp = calculate_E(BdR[-1], E[-1], BR[-1], C, dm)
-            dE.append(dE_temp)
-            if i%50==0:
-                diff = dE[-1] - dr_mock
-                result_hist(diff, i, 'Difference fitted dE real dE')
-                la = 'Reddening Variation Star ' + str(sample)
-                probe_chi_E(dE[-1][sample], BdR[-1], dm[sample], C[sample], BR[-1], E[-1][sample], i, la)
-            BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2], B_inv)
-            BdR.append(BdR_temp)
-            l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0],B_inv)
-            l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1])
-            l1.append(l_1)
-            l2.append(l_2)
-            te[i] = np.dot(BdR[-1],dR_mock)
-        probe_R(BdR, dR_mock, te, 'dR with dE')
-
-        return 0
-
-
-    for i in range(convergence_limit):
-        # calculate the root of chi_sq for dE
+    for i in range(limit):
+        # calculate dE
         dE_temp = calculate_E(BdR[-1], E[-1], BR[-1], C, dm)
         dE.append(dE_temp)
-        # calculate the terms of chi_sq when fitting for dR, that are independant of dR
+
+        # calculate dR
         BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2], B_inv)
         BdR.append(BdR_temp)
+        dR = np.einsum('ij,j->i',B_inv,BdR[-1])
+        dr_dot[i] = np.dot(dR,R)
+        dr_len[i] = np.dot(BdR[-1],BdR[-1])**0.5
+
         # update lambda_1 and _2 according to the constraints and append
         l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0],B_inv)
         l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1])
         l1.append(l_1)
         l2.append(l_2)
 
-        # calculate the root of chi_sq for E and append
+        # calculate E
         E_temp = calculate_E(BR[-1], dE[-1], BdR[-1], C, dm)
         E.append(E_temp)
+
+        # calculate R
         BR_temp = calculate_R(BR[-1], E[-1], BdR[-1], dE[-1], C, dm, l3[-1], l4[-1], rho[2:], B_inv)
         BR.append(BR_temp)
+        R = np.einsum('ij,j->i',B_inv,BR[-1])
+        r_dot[i] = np.dot(R,dR)
+        r_len[i] = np.dot(BR[-1],BR[-1])**0.5
+
         # update lambda_3 and _4 according to the constraints and append
         l_3 = l3[-1] + constraint_ortho(BdR[-1],BR[-1],rho[2],B_inv)
         l_4 = l4[-1] + constraint_unity(BR[-1], rho[3])
@@ -528,25 +574,52 @@ def main():
         l4.append(l_4)
 
         # Progress
-        chi_t = chi_sq(E[-1], BR[-1], dE[-1], BdR[-1], C, dm)
+        chi_t = np.sum(chi_sq(E[-1], BR[-1], dE[-1], BdR[-1], C, dm))/dof
         chi.append(chi_t)
-        if i%(convergence_limit//20) == 0:
+        if i%(limit//20) == 0:
             print(f'Iteration {i} Complete')
 
 
+        # if integration testing
+        if R_mock is not None:
+            rm_dot[i] = np.dot(BR[-1],R_mock)
+            drm_dot[i] = np.dot(BdR[-1],dR_mock)
+            if i%(limit//3) == 0:
+                diff = dE[-1]*np.dot(BdR[-1],BdR[-1])**0.5 - dr_mock
+                result_hist(diff, i, 'Difference dE', prefix)
+                diff = E[-1]*np.dot(BR[-1],BR[-1])**0.5 - E[0]
+                result_hist(diff, i, 'Difference E', prefix)
+                print(f'Iteration {i}: Made a dE and E difference plot')
+
+
     # checking if we actually converged or did max amount of iterations without converging
-    if i == (convergence_limit-1):
-        print('No convergence within {} iterations possible!'.format(convergence_limit))
+    if i == (limit-0):
+        print('No convergence within {} iterations possible!'.format(limit))
+
+    # plots of mock taken over iterations
+    if R_mock is not None:
+        plots = [(drm_dot, 'Dot dR mock'), (rm_dot, 'Dot R mock')]
+        print('Difference in R and mock:')
+        print(BR[-1] - R_mock)
+        print('Angle between R and mock:')
+        print(np.arccos(np.dot(BR[-1],R_mock)/(np.dot(R_mock,R_mock)**0.5*r_len[-1]))*180/np.pi)
+        print('Difference in dR and mock:')
+        print(BdR[-1] - dR_mock)
+        print('Angle between dR and mock:')
+        print(np.arccos(np.dot(BdR[-1],dR_mock)/(np.dot(dR_mock,dR_mock)**0.5*dr_len[-1]))*180/np.pi)
+        for (arr, text) in plots:
+            lambda_plot(arr, text, prefix)
+
+
 
     # saving the data
-    dtype = [('l1','f4'),('l2','f4'),('l3','f4'),('l4','f4')]
-    l = np.empty(len(l1),dtype=dtype)
-    l['l1'] = l1
-    l['l2'] = l2
-    l['l3'] = l3
-    l['l4'] = l4
+    l = np.empty((len(l1),4))
+    c = np.empty((len(r_dot),4))
+    for idx, (lx, cx) in enumerate([(l1,r_dot),(l2,r_len),(l3,dr_dot),(l4,dr_len)]):
+        l[:,idx] = lx
+        c[:,idx] = cx
 
-    save(saving, E, BR, dE, BdR, l, dm, C, chi)
+    save(saving, E, BR, dE, BdR, l, dm, C, chi, c)
 
     return 0
 

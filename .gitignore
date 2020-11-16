@@ -39,4 +39,5 @@ Thumbs.db
 #Leon
 #####
 *.h5
-.ipynb_checkpoints
+*.png
+*.ipynb*

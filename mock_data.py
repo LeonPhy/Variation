@@ -145,9 +145,27 @@ def mock_m(d, r, nn, seed = 14, max = 0.1):
     return BR, dE, BdR
 
 
-def noise(d, seed = 14):
+def noise(d, par_gauss = False, seed = 14):
     """
+    Takes a mock dataset with artificial magnitudes and adds noise to all observed qunatities.
+    This includes Stellar Parameter, Magnitudes and distances. For the last one we include the
+    option to add gaussian noise on the distance or the parallax (which doesn't transform 1 to 1).
 
+    Parameters
+    ----------
+    d: np.ndarray
+        Data-array which contains the the theta, mag, parllax and their errors
+    par_gauss: Boolean
+        False by default, means we add the noise to the distance and not the parllax
+    seed: int
+        The rng seed, set to 14 as default.
+
+    Returns:
+    --------
+    d1: np.ndarray
+        The noisy data
+    d0: np.ndarray
+        The true value for the noisy data
     """
     #
     rng = np.random.default_rng(seed)
@@ -165,11 +183,16 @@ def noise(d, seed = 14):
     for type, _ in dtype:
         d0[type] = d1[type]
         norm = rng.normal(size=d1[type].shape)
+        err = type + '_err'
         if type == 'atm_param_p':
             for k in range(3):
                 d1[type][:,k] += norm[:,k]*d1['atm_param_cov_p'][:,k,k]
+        elif (not par_gauss) & (type =='parallax'):
+            dm = (10. - 5.*np.log10(d1[type]))
+            dm += norm*(5./np.log(10))*(d1[err]/d1[type])
+            d1[type] = 10**(2-0.2*dm)
+            print('Adding gaussian error in the distance')
         else:
-            err = type + '_err'
             d1[type] += norm*d[err]
 
     check = (d1['parallax'] < 0)
@@ -181,10 +204,14 @@ def noise(d, seed = 14):
 def main():
     # the folder location where the datasets are saved
     dir = 'data/'
+    big = 1
+    seed = np.random.default_rng().integers(1,1000)
+    seed = 20
     # the actual file names
-    base = dir + 'green2020_test_data_small.h5'
-    mock = dir + 'mock_data.h5'
+    base = dir + 'green2020_small_data.h5'
+    mock = dir + 'mock_seed' + str(seed) + '_small_data.h5'
     file = dir + 'green2020_nn_model.h5'
+    print(mock)
 
     # load the Neural Network and read out the values from the test dataset
     nn_model = tf.keras.models.load_model(file)
@@ -199,12 +226,17 @@ def main():
         | ~np.isfinite(d['parallax_err'])
             )
 
+    print('We filter out ', sum(~idx), ' and use a total of ', sum(idx), ' Stars')
     d = d[idx]
     r = r[idx]
 
     # calculate R, dR and dE and replace mag and mag_err in the dataset
-    R, dr, dR = mock_m(d, r, nn_model)
+    R, dr, dR = mock_m(d, r, nn_model, seed = seed)
+    d = np.tile(d, big)
+    r = np.tile(r, big)
+    dr = np.tile(dr, big)
     d0, d1 = noise(d)
+    print('The mock catalogue contains ', len(dr), ' Stars')
     save(mock, d1, d0, r, R, dr, dR)
 
     return 0
