@@ -42,4 +42,4 @@ Thumbs.db
 *.png
 *.ipynb
 *.ipynb_checkpoints
-__pycache__
+*.pyc
