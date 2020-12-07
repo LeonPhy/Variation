@@ -29,7 +29,7 @@ def read_out(path):
     return d, r, R, dr, dR
 
 
-def save(path, r, R, dr, dR, l, dm , C, chi_sq, c):
+def save(path, r, R, dr, dR, l, dm , C, chi_sq, c, cov_m):
     # save the mock data run
     with h5py.File(path, 'w') as f:
         f.create_dataset('/E', data=r, chunks=True, compression='gzip', compression_opts=3)
@@ -41,22 +41,23 @@ def save(path, r, R, dr, dR, l, dm , C, chi_sq, c):
         f.create_dataset('/C', data=C, chunks=True, compression='gzip', compression_opts=3)
         f.create_dataset('/chi', data=chi_sq, chunks=True, compression='gzip', compression_opts=3)
         f.create_dataset('/con', data=c, chunks=True, compression='gzip', compression_opts=3)
+        f.create_dataset('/cov', data=cov_m, chunks=True, compression='gzip', compression_opts=3)
 
-def guess_dR(BR, B, B_inv):
+def guess_dR(R):
     # read out the mean wavelengths of the 13 filters we use
     with open('mean_wavelengths.json', 'r') as f:
         mean = json.load(f)
 
     x = np.array(mean)
-    R = np.einsum('ij,j->i',B_inv,BR)
 
     # calculate the offset of our linear dR-model to be perpendicular to R
     b = np.sum(x*R)/np.sum(R)
     y = x[:] - b[None]
 
     # norm it to 1 and transform it to mag/color space
-    BdR = np.einsum('ij,j->i',B,y)
-    BdR /= np.dot(BdR,BdR)**0.5
+    y /= np.dot(y,y)**0.5
+    BdR = y.copy()
+    BdR[1:] -= BdR[0]
 
     return BdR
 
@@ -94,11 +95,13 @@ def calculate_E(R, dE, dR, C, m):
     return E
 
 
-def constraint_ortho(R, dR, l1 = None, B_inv = None):
+def constraint_ortho(R_o, dR_o, l1 = None, B_inv = True):
     # transform R and dR into the right space where we want them to be orthogonal
-    if B_inv is not None:
-        R = np.einsum('ij,j->i',B_inv,R)
-        dR = np.einsum('ij,j->i',B_inv,dR)
+    R = R_o.copy()
+    dR = dR_o.copy()
+    if B_inv:
+        R[1:] += R[0]
+        dR[1:] += dR[0]
     # constraint that is  f(R,dR) - b
     con = (np.dot(R,dR))
 
@@ -108,9 +111,12 @@ def constraint_ortho(R, dR, l1 = None, B_inv = None):
     return con
 
 
-def constraint_unity(R, l2 = None):
+def constraint_unity(R_o, l2 = None, B_inv = True):
+    R = R_o.copy()
+    if B_inv:
+        R[1:] += R[0]
     # constraint that is f(R) - b
-    con = (np.dot(R,R) - 1)
+    con = (np.dot(R,R)**0.5 - 1)
 
     if l2 is not None:
         con *= l2
@@ -118,7 +124,7 @@ def constraint_unity(R, l2 = None):
     return con
 
 
-def lagrangian(R2, l1, l2, n, rho, B_inv, R1, EEC, EmC, ECm, ECR, ERC, RCm, mCR, RCR):
+def lagrangian(R2, l1, l2, n, rho, R1, EEC, EmC, ECm, ECR, ERC, RCm, mCR, RCR):
     # calculate the terms that depend on the varibale we minimize for in chi_sq
     rCr = np.einsum('i,ij,j',R2,EEC,R2)
     mCr = np.dot(EmC,R2)
@@ -127,9 +133,9 @@ def lagrangian(R2, l1, l2, n, rho, B_inv, R1, EEC, EmC, ECm, ECR, ERC, RCm, mCR,
     RCr = np.dot(ECR,R2)
 
     # define the constraints for the minimization (length 1 and perpendicular in mag space to R1)
-    con_1 = constraint_ortho(R2, R1, l1, B_inv)
+    con_1 = constraint_ortho(R2, R1, l1)
     con_2 = constraint_unity(R2, l2)
-    pen_1 = constraint_ortho(R2, R1, (0.5*rho[0])**0.5, B_inv)**2
+    pen_1 = constraint_ortho(R2, R1, (0.5*rho[0])**0.5)**2
     pen_2 = constraint_unity(R2, (0.5*rho[1])**0.5)**2
 
     # calculate the 3 components of our augmented lagrangian
@@ -142,7 +148,7 @@ def lagrangian(R2, l1, l2, n, rho, B_inv, R1, EEC, EmC, ECm, ECR, ERC, RCm, mCR,
     return lag
 
 
-def calculate_R(R, E, dR, dE, C, m, l1, l2, rho, B_inv):
+def calculate_R(R, E, dR, dE, C, m, l1, l2, rho, dof):
     # calculate terms of chi_sq if R (reddening or variation) is the variables
     mCm, mC, Cm = calculate_pre_loop(m,C)
     RC = dE[:,None]*np.einsum('i,nij->nj',dR,C)
@@ -150,7 +156,6 @@ def calculate_R(R, E, dR, dE, C, m, l1, l2, rho, B_inv):
     RCm = dE*np.einsum('i,ni->n',dR,Cm)
     mCR = dE*np.einsum('ni,i->n',mC,dR)
     RCR = dE*np.einsum('i,ni->n',dR,CR)
-    n = len(E)
 
     # sum each term over all data points so the scipy method doesn't do the calculations
     EEC = np.sum(E[:,None,None]**2*C, axis=0)
@@ -163,10 +168,10 @@ def calculate_R(R, E, dR, dE, C, m, l1, l2, rho, B_inv):
     RCR = np.sum(RCR, axis=0)
 
     partial = (EEC, EmC, ECm, ECR, ERC, RCm, mCR, RCR)
-    arg = (l1, l2, n, rho, B_inv, dR) + partial
+    arg = (l1, l2, dof, rho, dR) + partial
 
-    co1 = lagrangian(R, 0, 0, n, [0,0], B_inv, dR, *partial) + mCm/n
-    co2 = np.sum(chi_sq(E, R, dE, dR, C, m))/n
+    co1 = lagrangian(R, 0, 0, dof, [0,0], dR, *partial) + mCm/dof
+    co2 = np.sum(chi_sq(E, R, dE, dR, C, m))/dof
     if not np.allclose(co1,co2):
         print("Values differ by ",co1-co2)
 
@@ -202,7 +207,7 @@ def normalize_theta(theta):
     return x
 
 
-def prepare_data(d, nn):
+def prepare_data(d, nn, r_fit):
     """
     Predicts the data we need from the neural network and calculates the covariance matrix and it's
     inverse, which is needed for chi_sq,
@@ -276,8 +281,9 @@ def prepare_data(d, nn):
 
     # predict R, transform to proper space and take the mean
     R = predict_R(d['atm_param_p'], nn)
-    BR = np.einsum('ij,nj->ni',B,R)
-    R_mean = np.mean(BR, axis=0)
+    R_mean = np.mean(R, axis=0)
+    r_fit *= np.dot(R_mean,R_mean)**0.5
+    R_mean /= np.dot(R_mean,R_mean)**0.5
     # R_mean += np.random.default_rng(10).normal(size=R_mean.shape)
 
     # calculate the gradient of predicting BM for the covariance matrix
@@ -298,7 +304,7 @@ def prepare_data(d, nn):
     dm = B_M_model(d['atm_param_p']).numpy()
     dm -= m
 
-    return dm, C, R_mean, B, B_inv, dof
+    return dm, C, R_mean, r_fit, dof, cov_m
 
 
 def result_hist(x, iter, label, prefix, xlim = None):
@@ -405,7 +411,7 @@ def probe_R(R, ortho, unity, R_real, c, name, prefix):
     lambda_plot(unity, uni, prefix)
 
 
-def unit_tests(test, BR, BdR, E, dE, l1, l2, dm, C, rho, B_inv, test_len, prefix):
+def unit_tests(test, BR, BdR, E, dE, l1, l2, dm, C, rho, test_len, prefix):
     # the different tests possible that only solves parts on its own to verify that it is working
     sample = 900
     te = np.zeros((test_len,))
@@ -429,10 +435,10 @@ def unit_tests(test, BR, BdR, E, dE, l1, l2, dm, C, rho, B_inv, test_len, prefix
     if test == 'dR':
         # dE[-1] += np.random.default_rng(14).normal(size=len(dr_mock))*0.1*np.mean(dr_mock))
         for i in range(test_len):
-            BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2], B_inv)
+            BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2])
             BdR.append(BdR_temp)
-            l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0],B_inv)
-            l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1])
+            l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0],True)
+            l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1],True)
             l1.append(l_1)
             l2.append(l_2)
             te[i] = np.dot(BdR[-1],BdR[1])
@@ -441,10 +447,10 @@ def unit_tests(test, BR, BdR, E, dE, l1, l2, dm, C, rho, B_inv, test_len, prefix
     if test == 'R':
         # E[-1] += np.random.default_rng(14).normal(size=len(E[-1]))*0.1*np.mean(E[-1])
         for i in range(test_len):
-            BR_temp = calculate_R(BR[-1], E[-1], BdR[-1], dE[-1], C, dm, l1[-1], l2[-1], rho[2:], B_inv)
+            BR_temp = calculate_R(BR[-1], E[-1], BdR[-1], dE[-1], C, dm, l1[-1], l2[-1], rho[2:])
             BR.append(BR_temp)
-            l_1 = l1[-1] + constraint_ortho(BR[-1], BdR[-1], rho[2], B_inv)
-            l_2 = l2[-1] + constraint_unity(BR[-1], rho[3])
+            l_1 = l1[-1] + constraint_ortho(BR[-1], BdR[-1], rho[2], True)
+            l_2 = l2[-1] + constraint_unity(BR[-1], rho[3], True)
             l1.append(l_1)
             l2.append(l_2)
             te[i] = np.dot(BR[-1], BR[1])
@@ -459,10 +465,10 @@ def unit_tests(test, BR, BdR, E, dE, l1, l2, dm, C, rho, B_inv, test_len, prefix
                 result_hist(diff, i, 'Difference fitted dE real dE', prefix)
                 la = 'Reddening Variation Star ' + str(sample)
                 probe_chi_E(dE[-1][sample], BdR[-1], dm[sample], C[sample], BR[-1], E[-1][sample], i, la)
-            BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2], B_inv)
+            BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2])
             BdR.append(BdR_temp)
-            l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0],B_inv)
-            l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1])
+            l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0],True)
+            l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1],True)
             l1.append(l_1)
             l2.append(l_2)
             te[i] = np.dot(BdR[-1],BdR[1])
@@ -477,10 +483,10 @@ def unit_tests(test, BR, BdR, E, dE, l1, l2, dm, C, rho, B_inv, test_len, prefix
                 result_hist(diff, i, 'Difference fitted E real E', prefix)
                 la = 'Reddening Star ' + str(sample)
                 probe_chi_E(E[-1][sample], BR[-1], dm[sample], C[sample], BdR[-1], dE[-1][sample], i, la)
-            BR_temp = calculate_R(BR[-1], E[-1], BdR[-1], dE[-1], C, dm, l1[-1], l2[-1], rho[2:], B_inv)
+            BR_temp = calculate_R(BR[-1], E[-1], BdR[-1], dE[-1], C, dm, l1[-1], l2[-1], rho[2:])
             BR.append(BR_temp)
-            l_1 = l1[-1] + constraint_ortho(BR[-1],BdR[-1],rho[2],B_inv)
-            l_2 = l2[-1] + constraint_unity(BR[-1],rho[3])
+            l_1 = l1[-1] + constraint_ortho(BR[-1],BdR[-1],rho[2],True)
+            l_2 = l2[-1] + constraint_unity(BR[-1],rho[3],True)
             l1.append(l_1)
             l2.append(l_2)
             te[i] = np.dot(BR[-1],BR[1])
@@ -510,16 +516,16 @@ def main():
     test = args.test
 
     # read out the data, Neural Network and prepare the data with the Neural Network
-    data, r_fit, R_mock, dr_mock, dR_mock = read_out(path)
+    data, r, R_mock, dr_mock, dR_mock = read_out(path)
     nn_model = tf.keras.models.load_model(model_path)
-    dm, C, BR_m, B, B_inv, dof = prepare_data(data, nn_model)
-    r_fit *= np.dot(BR_m, BR_m)**0.5
-    BR_m /= np.dot(BR_m, BR_m)**0.5
+    dm, C, R, r_fit, dof, cov_m = prepare_data(data, nn_model, r)
 
     # prepare the list that saved the values for each iteration (!!we fit for BR/BdR!!)
+    BR_m = R.copy()
+    BR_m[1:] -= BR_m[0]
     BR = [BR_m]
     E = [r_fit]
-    BdR = [guess_dR(BR_m, B, B_inv)]
+    BdR = [guess_dR(R)]
     dE = []
     chi = []
 
@@ -527,7 +533,7 @@ def main():
         BdR.append(dR_mock)
         BR.append(R_mock)
         dE.append(dr_mock)
-        unit_tests(test, BR, BdR, E, dE, l1, l2, dm, C, rho, B_inv, limit, prefix)
+        unit_tests(test, BR, BdR, E, dE, l1, l2, dm, C, rho, limit, prefix)
         return 0
 
     r_dot = np.empty((limit,))
@@ -536,7 +542,6 @@ def main():
     dr_len = np.empty((limit,))
     rm_dot = np.empty((limit,))
     drm_dot = np.empty((limit,))
-    R = np.einsum('ij,j->i',B_inv,BR[0])
 
     for i in range(limit):
         # calculate dE
@@ -544,14 +549,15 @@ def main():
         dE.append(dE_temp)
 
         # calculate dR
-        BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2], B_inv)
+        BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2], dof)
         BdR.append(BdR_temp)
-        dR = np.einsum('ij,j->i',B_inv,BdR[-1])
+        dR = BdR[-1].copy()
+        dR[1:] += dR[0]
         dr_dot[i] = np.dot(dR,R)
-        dr_len[i] = np.dot(BdR[-1],BdR[-1])**0.5
+        dr_len[i] = np.dot(dR,dR)**0.5
 
         # update lambda_1 and _2 according to the constraints and append
-        l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0],B_inv)
+        l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0])
         l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1])
         l1.append(l_1)
         l2.append(l_2)
@@ -561,14 +567,15 @@ def main():
         E.append(E_temp)
 
         # calculate R
-        BR_temp = calculate_R(BR[-1], E[-1], BdR[-1], dE[-1], C, dm, l3[-1], l4[-1], rho[2:], B_inv)
+        BR_temp = calculate_R(BR[-1], E[-1], BdR[-1], dE[-1], C, dm, l3[-1], l4[-1], rho[2:], dof)
         BR.append(BR_temp)
-        R = np.einsum('ij,j->i',B_inv,BR[-1])
+        R = BR[-1].copy()
+        R[1:] += R[0]
         r_dot[i] = np.dot(R,dR)
-        r_len[i] = np.dot(BR[-1],BR[-1])**0.5
+        r_len[i] = np.dot(R,R)**0.5
 
         # update lambda_3 and _4 according to the constraints and append
-        l_3 = l3[-1] + constraint_ortho(BdR[-1],BR[-1],rho[2],B_inv)
+        l_3 = l3[-1] + constraint_ortho(BdR[-1],BR[-1],rho[2])
         l_4 = l4[-1] + constraint_unity(BR[-1], rho[3])
         l3.append(l_3)
         l4.append(l_4)
@@ -619,7 +626,7 @@ def main():
         l[:,idx] = lx
         c[:,idx] = cx
 
-    save(saving, E, BR, dE, BdR, l, dm, C, chi, c)
+    save(saving, E, BR, dE, BdR, l, dm, C, chi, c, cov_m)
 
     return 0
 
