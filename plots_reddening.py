@@ -12,23 +12,19 @@ import h5py
 def read_out(path):
     # read out the data set
     path1 = path + 'data.h5'
-    path2 = path + 'result.h5'
-    with h5py.File(path1, 'r') as f:
-        d = f['data'][:]
+    path2 = path + 'result_temp.h5'
+    data = {}
+    keys = ['E', 'dE', 'R', 'dR', 'l', 'con', 'C', 'chi', 'cov', 'V', 'dm']
 
     with h5py.File(path2, 'r') as f:
-        E = f['E'][:]
-        dE = f['dE'][:]
-        R = f['R'][:]
-        dR = f['dR'][:]
-        l = f['l'][:]
-        dm = f['dm'][:]
-        C = f['C'][:]
-        chi = f['chi'][:]
-        con = f['con'][:]
-        cov = f['cov'][:]
+        for key in keys:
+            k = '\\' + key
+            data[key] = f[k][:]
 
-    return d, E, dE, R, dR, l, dm, C, chi, con, cov
+    with h5py.File(path1, 'r') as f:
+        data['d'] = f['data'][:]
+
+    return data
 
 
 def result_hist(x, iter, label, prefix, xlim = None):
@@ -294,23 +290,25 @@ def main():
     prefix = 'green2020_small_'
     path = dir + prefix
 
-    d, E, dE, R, dR, l, dm, C, chi, c, cov = read_out(path)
+    d = read_out(path)
 
-    plots = [(l[:,0], 'Lambda 1 (Ortho dR)'), (l[:,2], 'Lambda 3 (Ortho R)'),
-                (l[:,1], 'Lambda 2 (Unity dR)'), (l[:,3], 'Lambda 4 (Unity R)'),
-                (c[:,2], 'Ortho after dR'), (c[:,3], 'Unity dR'),
-                (c[:,0], 'Ortho after R'), (c[:,1], 'Unity R'), (chi, 'Chi Sqaure')]
+    plots = [(d['l'][:,0], 'Lambda 1 (Ortho dR)'), (d['l'][:,2], 'Lambda 3 (Ortho R)'),
+                (d['l'][:,1], 'Lambda 2 (Unity dR)'), (d['l'][:,3], 'Lambda 4 (Unity R)'),
+                (d['con'][:,2], 'Ortho after dR'), (d['con'][:,3], 'Unity dR'),
+                (d['con'][:,0], 'Ortho after R'), (d['con'][:,1], 'Unity R'),
+                (d['chi'], 'Chi Sqaure')]
 
     for (arr, text) in plots:
-        pass #lambda_plot(arr, text, prefix)
+        lambda_plot(arr, text, prefix)
 
-    result_hist(E[-1,:],0,'E',prefix,(0,4))
-    result_hist(dE[-1,:],0,'dE',prefix,(-1,1))
+    result_hist(d['E'][-1,:],0,'E',prefix,(0,4))
+    result_hist(d['dE'][-1,:],0,'dE',prefix,(-1,1))
 
-    temp_res(d, E[-1,:], dE[-1,:], R[-2,:], dR[-2,:], dm, cov)
-    red_teff(E[-1,:],R[-1,:],dE[-1,:],dR[-1,:],d['atm_param'][:,0])
-    component_plot(R,'reddening')
-    component_plot(dR,'reddening variation')
+    temp_res(d['d'], d['E'][-1,:], d['dE'][-1,:], d['R'][-1,:], d['dR'][-2,:], d['dm'], d['cov'])
+    red_teff(d['E'][-1,:],d['R'][-1,:],d['dE'][-1,:],d['dR'][-1,:],d['d']['atm_param'][:,0])
+    component_plot(d['R'],'reddening')
+    component_plot(d['dR'],'reddening variation')
+    component_plot(d['V'],'temperature dependency')
 
 
     return 0
