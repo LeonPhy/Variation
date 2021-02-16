@@ -12,14 +12,13 @@ import h5py
 def read_out(path):
     # read out the data set
     path1 = path + 'data.h5'
-    path2 = path + 'result_temp.h5'
+    path2 = path + 'result.h5'
     data = {}
     keys = ['E', 'dE', 'R', 'dR', 'l', 'con', 'C', 'chi', 'cov', 'V', 'dm']
 
     with h5py.File(path2, 'r') as f:
         for key in keys:
-            k = '\\' + key
-            data[key] = f[k][:]
+            data[key] = f[key][:]
 
     with h5py.File(path1, 'r') as f:
         data['d'] = f['data'][:]
@@ -28,6 +27,11 @@ def read_out(path):
 
 
 def result_hist(x, iter, label, prefix, xlim = None):
+    """
+    x: np.array
+        The value that are displayed in the histogram
+
+    """
     # plot the result histogram and calculate mean and std of the values
     plt.rcParams.update({'font.size':24})
     fig = plt.figure(figsize=(20,14), facecolor = 'white')
@@ -57,6 +61,9 @@ def result_hist(x, iter, label, prefix, xlim = None):
 
 
 def lambda_plot(l, label, prefix):
+    """
+
+    """
     # plot the lambda given to the function
     plt.rcParams.update({'font.size':24})
     fig = plt.figure(figsize=(20,14), facecolor = 'white')
@@ -287,7 +294,7 @@ def component_plot(R, label):
 
 def main():
     dir = 'data/'
-    prefix = 'green2020_small_'
+    prefix = 'mock_seed20_small_temp_'
     path = dir + prefix
 
     d = read_out(path)
@@ -301,10 +308,10 @@ def main():
     for (arr, text) in plots:
         lambda_plot(arr, text, prefix)
 
-    result_hist(d['E'][-1,:],0,'E',prefix,(0,4))
-    result_hist(d['dE'][-1,:],0,'dE',prefix,(-1,1))
+    #result_hist(d['E'][-1,:],0,'E',prefix,(0,4))
+    #result_hist(d['dE'][-1,:],0,'dE',prefix,(-1,1))
 
-    temp_res(d['d'], d['E'][-1,:], d['dE'][-1,:], d['R'][-1,:], d['dR'][-2,:], d['dm'], d['cov'])
+    #temp_res(d['d'], d['E'][-1,:], d['dE'][-1,:], d['R'][-1,:], d['dR'][-2,:], d['dm'], d['cov'])
     red_teff(d['E'][-1,:],d['R'][-1,:],d['dE'][-1,:],d['dR'][-1,:],d['d']['atm_param'][:,0])
     component_plot(d['R'],'reddening')
     component_plot(d['dR'],'reddening variation')

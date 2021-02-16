@@ -273,7 +273,7 @@ def normalize_theta(theta):
     return x
 
 
-def prepare_data(d, nn, r):
+def prepare_data(d, nn, r_fit):
     """
     Predicts the data we need from the neural network and calculates the covariance matrix and it's
     inverse, which is needed for chi_sq,
@@ -298,7 +298,6 @@ def prepare_data(d, nn, r):
     B_inv: np.array
         The maxtrix to transform from mag/color -> mag space
     """
-    r_fit = r.copy()
     n_stars, n_bands = d['mag'].shape
     dof = n_stars*(n_bands-2)
     large_err = 999.
@@ -417,18 +416,6 @@ def lambda_plot(l, label, prefix):
     plt.savefig(picp, dpi = 150, bbox_inches='tight')
 
 
-def scatter(x, y, label, prefix):
-    plt.rcParams.update({'font.size':24})
-    fig = plt.figure(figsize=(20,14), facecolor = 'white')
-    ax = fig.subplots(1,1)
-    h = np.linspace(min(x),max(x),100)
-    ax.plot(x,y,'xk')
-    ax.plot(h,h,'k-',alpha=0.7)
-    pic = label.replace(' ', '_')
-    picp = 'pictures/' + prefix + pic
-    plt.savefig(picp, dpi = 150, bbox_inches='tight')
-
-
 def probe_chi_E(E, R, dm, C, dR, dE, V, T, i, label):
     # create the arrays with only varying E to probe what effect small changes in it make on chi
     probe = np.linspace(0.7,1.3,1000)*E
@@ -503,17 +490,14 @@ def unit_tests(test, BR, BdR, V, E, dE, T, l1, l2, dm, C, rho, dof, test_len, pr
     te = np.zeros((test_len,))
     TE = T*E[-1]
     RR = BR[-1][None,:] + T[:,None]*V[-1][None,:]
-    R_1 = BR[1].copy()
-    R_1[1:] += R_1[0]
-    dR_1 = BdR[1].copy()
-    dR_1[1:] += dR_1[0]
+
 
     if test == 'dE':
         dE_temp = calculate_E(BdR[-1], E[-1], RR, C, dm)
         dE.append(dE_temp)
         diff = dE[-1] - dE[0]
         result_hist(diff, 0, 'Difference fitted dE real dE', prefix)
-        scatter(dE[-1], dE[0], 'Scatter fitted dE real dE', prefix)
+        scatter(dE[-1], E[-1], 'Variation'
         la = 'Reddening Variation Star ' + str(s)
         probe_chi_E(dE[-1][s], BdR[-1], dm[s], C[s], BR[-1], E[-1][s], V[-1], T[s], 0, la)
 
@@ -522,7 +506,6 @@ def unit_tests(test, BR, BdR, V, E, dE, T, l1, l2, dm, C, rho, dof, test_len, pr
         E.append(E_temp)
         diff = E[-1] - E[1]
         result_hist(diff, 0, 'Difference fitted E real E', prefix)
-        scatter(E[-1], E[1], 'Scatter fitted E real E', prefix)
         la = 'Reddening Star ' + str(s)
         probe_chi_E(E[-1][s], BR[-1], dm[s], C[s], BdR[-1], dE[-1][s], V[-1], T[s], 0, la)
 
@@ -535,9 +518,7 @@ def unit_tests(test, BR, BdR, V, E, dE, T, l1, l2, dm, C, rho, dof, test_len, pr
             l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1],True)
             l1.append(l_1)
             l2.append(l_2)
-            dR = BdR[-1].copy()
-            dR[1:] += dR[0]
-            te[i] = np.dot(dR,dR_1)
+            te[i] = np.dot(BdR[-1],BdR[1])
         probe_R(BdR, l1, l2, BdR[1], te, 'dR', prefix)
 
     if test == 'R':
@@ -549,17 +530,14 @@ def unit_tests(test, BR, BdR, V, E, dE, T, l1, l2, dm, C, rho, dof, test_len, pr
             l_2 = l2[-1] + constraint_unity(BR[-1], rho[3], True)
             l1.append(l_1)
             l2.append(l_2)
-            R = BR[-1].copy()
-            R[1:] += R[0]
-            te[i] = np.dot(R, R_1)
+            te[i] = np.dot(BR[-1], BR[1])
         probe_R(BR, l1, l2, BR[1], te, 'R', prefix)
 
     if test == 'V':
-        V_temp = calculate_R(V[-1], TE, BR[-1], E[-1], C, dm, 0, 0, [0,0], dof, BdR[-1], dE[-1])
-        V.append(V_temp)
-        scatter(V[-1],V[1],'Scatter fitted V real V', prefix)
-
-    if test == 'RV'
+        for i in range(test_len):
+            V_temp = calculate_R(V[-1], TE, BR[-1], E[-1], C, dm, 0, 0, [0,0], dof, BdR[-1], dE[-1])
+            V.append(V_temp)
+        print((V[-1]))
 
     if test == 'dEdR':
         for i in range(test_len):
@@ -576,9 +554,7 @@ def unit_tests(test, BR, BdR, V, E, dE, T, l1, l2, dm, C, rho, dof, test_len, pr
             l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1],True)
             l1.append(l_1)
             l2.append(l_2)
-            dR = BdR[-1].copy()
-            dR[1:] += dR[0]
-            te[i] = np.dot(dR,dR_1)
+            te[i] = np.dot(BdR[-1],BdR[1])
         probe_R(BdR, l1, l2, BdR[1], te, 'dR with dE', prefix)
 
     if test == 'ER':
@@ -597,9 +573,7 @@ def unit_tests(test, BR, BdR, V, E, dE, T, l1, l2, dm, C, rho, dof, test_len, pr
             l_2 = l2[-1] + constraint_unity(BR[-1],rho[3],True)
             l1.append(l_1)
             l2.append(l_2)
-            R = BR[-1].copy()
-            R[1:] += R[0]
-            te[i] = np.dot(R, R_1)
+            te[i] = np.dot(BR[-1],BR[1])
             RR = BR[-1][None,:] + T[:,None]*V[-1][None,:]
         probe_R(BR, l1, l2, BR[1], te, 'R with E', prefix)
 
@@ -618,8 +592,7 @@ def main():
 
     # resolve arguments for the unit tests; see tests for possible test
     parser = argparse.ArgumentParser(prog='Variation Fit')
-    test_choices = [None,'dE','E','dR','R','V','dEdR','ER','RV','dRV','ER','dEV',
-                                'ERV','dEdRV','EVdEdR']
+    test_choices = [None,'dE','E','dR','R','V','dEdR','ER','EV','EVdEdR']
     parser.add_argument('-t', '--test',default=None, choices=test_choices,
                                      help='For testing, default value is None')
     parser.add_argument('limit' ,default=1000, nargs='?', type=int,

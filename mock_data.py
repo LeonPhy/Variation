@@ -20,15 +20,11 @@ def read_out(path):
     return d, r
 
 
-def save(path, d, d0, r, R, dr, dR):
+def save(path, d):
     # save the mock data set with the used R, E, dR, dE
     with h5py.File(path, 'w') as f:
-        f.create_dataset('/data', data=d, chunks=True, compression='gzip', compression_opts=3)
-        f.create_dataset('/r_fit', data=r, chunks=True, compression='gzip', compression_opts=3)
-        f.create_dataset('/R', data=R, chunks=True, compression='gzip', compression_opts=3)
-        f.create_dataset('/dr_fit', data=dr, chunks=True, compression='gzip', compression_opts=3)
-        f.create_dataset('/dR', data=dR, chunks=True, compression='gzip', compression_opts=3)
-        f.create_dataset('/data_no_noise', data=d0, chunks=True, compression='gzip', compression_opts=3)
+        for key in d.keys():
+            f.create_dataset(key, data=d[key], chunks=True, compression='gzip', compression_opts=3)
 
 
 def guess_dR(R):
@@ -43,11 +39,9 @@ def guess_dR(R):
     y = x[:] - b[None]
 
     # add a factor to scale the reddening vector so our initial guess is not the same
-    y *= 0.4
+    y *= 0.7
     # norm it to 1
-    y[1:] -= y[0]
     y /= np.dot(y,y)**0.5
-    y[1:] += y[0]
 
     return y
 
@@ -112,8 +106,9 @@ def mock_m(d, r, nn, seed = 14, max = 0.1):
     # predict R and take the mean to get a general reddening vector and transform it into mag/color
     R_all = predict_R(d['atm_param_p'], nn)
     R = np.mean(R_all, axis=0)
+    r *= np.dot(R,R)**0.5
+    R /= np.dot(R,R)**0.5
     BR = np.einsum('ij,j->i',B,R)
-    BR /= np.dot(BR,BR)**0.5
 
     # predict m from theta and take parallax and reddening into account for m
     m = predict_M(d['atm_param_p'], nn)
@@ -121,10 +116,16 @@ def mock_m(d, r, nn, seed = 14, max = 0.1):
     m[:,:] += (10. - 5.*np.log10(d['parallax']))[:,None]
     m[:,:] += r[:,None] * R[None,:]
 
+    # adding the temperature variance
+    T = (d['atm_param'][:,0].copy()-6000)/1000
+    V = np.var(R_all, axis=0)
+    BV = np.einsum('ij,j->i',B,V)
+    m[:,:] += r[:,None] * T[:,None] * V[None,:]
+
     # guess BdR and generate random dE to add them to the mock m
     dR = guess_dR(R)
     BdR = np.einsum('ij,j->i',B,dR)
-    dE = max*rng.random((n_stars,))
+    dE = rng.normal(0,max,(n_stars,))
     m[:,:] += dE[:,None] * dR[None,:]
     d['mag'] = m
 
@@ -139,10 +140,8 @@ def mock_m(d, r, nn, seed = 14, max = 0.1):
         m_err[idx] = replace
 
     d['mag_err'] = m_err
-    print(np.dot(BR,BR))
-    print(np.dot(R,dR))
 
-    return BR, dE, BdR
+    return BR, dE, BdR, BV
 
 
 def noise(d, par_gauss = False, seed = 14):
@@ -209,9 +208,8 @@ def main():
     seed = 20
     # the actual file names
     base = dir + 'green2020_small_data.h5'
-    mock = dir + 'mock_seed' + str(seed) + '_small_data.h5'
+    mock = dir + 'mock_seed' + str(seed) + '_small_temp_data.h5'
     file = dir + 'green2020_nn_model.h5'
-    print(mock)
 
     # load the Neural Network and read out the values from the test dataset
     nn_model = tf.keras.models.load_model(file)
@@ -231,13 +229,15 @@ def main():
     r = r[idx]
 
     # calculate R, dR and dE and replace mag and mag_err in the dataset
-    R, dr, dR = mock_m(d, r, nn_model, seed = seed)
+    R, dr, dR, V = mock_m(d, r, nn_model, seed = seed)
     d = np.tile(d, big)
     r = np.tile(r, big)
     dr = np.tile(dr, big)
     d0, d1 = noise(d)
     print('The mock catalogue contains ', len(dr), ' Stars')
-    save(mock, d1, d0, r, R, dr, dR)
+
+    saving = {'data':d1,'r_fit':r,'R':R,'dR':dR, 'dr_fit':dr, 'V':V, 'data_no_noise':d0}
+    save(mock, saving)
 
     return 0
 
