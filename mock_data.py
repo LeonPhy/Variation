@@ -118,7 +118,7 @@ def mock_m(d, r, nn, seed = 14, max = 0.1):
 
     # adding the temperature variance
     T = (d['atm_param'][:,0].copy()-6000)/1000
-    V = np.var(R_all, axis=0)
+    V = np.array([0.1,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1,1.2,1.3,1.4])  #np.var(R_all, axis=0)
     BV = np.einsum('ij,j->i',B,V)
     m[:,:] += r[:,None] * T[:,None] * V[None,:]
 

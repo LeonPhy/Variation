@@ -273,7 +273,7 @@ def normalize_theta(theta):
     return x
 
 
-def prepare_data(d, nn, r):
+def prepare_data(d, nn):
     """
     Predicts the data we need from the neural network and calculates the covariance matrix and it's
     inverse, which is needed for chi_sq,
@@ -298,7 +298,6 @@ def prepare_data(d, nn, r):
     B_inv: np.array
         The maxtrix to transform from mag/color -> mag space
     """
-    r_fit = r.copy()
     n_stars, n_bands = d['mag'].shape
     dof = n_stars*(n_bands-2)
     large_err = 999.
@@ -349,9 +348,7 @@ def prepare_data(d, nn, r):
     # predict R, transform to proper space and take the mean
     R = predict_R(d['atm_param_p'], nn)
     R_mean = np.mean(R, axis=0)
-    r_fit *= np.dot(R_mean,R_mean)**0.5
     R_mean /= np.dot(R_mean,R_mean)**0.5
-    # R_mean += np.random.default_rng(10).normal(size=R_mean.shape)
 
     # calculate the gradient of predicting BM for the covariance matrix
     with tf.GradientTape() as g:
@@ -371,7 +368,7 @@ def prepare_data(d, nn, r):
     dm = B_M_model(d['atm_param_p']).numpy()
     dm -= m
 
-    return dm, C, R_mean, r_fit, dof, cov_m
+    return dm, C, R_mean, dof, cov_m
 
 
 def result_hist(x, iter, label, prefix, xlim = None):
@@ -417,13 +414,15 @@ def lambda_plot(l, label, prefix):
     plt.savefig(picp, dpi = 150, bbox_inches='tight')
 
 
-def scatter(x, y, label, prefix):
+def scatter(fit, real, label, prefix):
     plt.rcParams.update({'font.size':24})
     fig = plt.figure(figsize=(20,14), facecolor = 'white')
     ax = fig.subplots(1,1)
-    h = np.linspace(min(x),max(x),100)
-    ax.plot(x,y,'xk')
+    h = np.linspace(min(fit),max(fit),100)
+    ax.plot(fit,real,'xk')
     ax.plot(h,h,'k-',alpha=0.7)
+    ax.set_ylabel('Real value')
+    ax.set_xlabel('Fit value')
     pic = label.replace(' ', '_')
     picp = 'pictures/' + prefix + pic
     plt.savefig(picp, dpi = 150, bbox_inches='tight')
@@ -511,18 +510,18 @@ def unit_tests(test, BR, BdR, V, E, dE, T, l1, l2, dm, C, rho, dof, test_len, pr
     if test == 'dE':
         dE_temp = calculate_E(BdR[-1], E[-1], RR, C, dm)
         dE.append(dE_temp)
-        diff = dE[-1] - dE[0]
+        diff = dE[-1] - dE[1]
         result_hist(diff, 0, 'Difference fitted dE real dE', prefix)
-        scatter(dE[-1], dE[0], 'Scatter fitted dE real dE', prefix)
+        scatter(dE[-1], dE[1], 'Scatter fitted dE real dE', prefix)
         la = 'Reddening Variation Star ' + str(s)
         probe_chi_E(dE[-1][s], BdR[-1], dm[s], C[s], BR[-1], E[-1][s], V[-1], T[s], 0, la)
 
     if test == 'E':
         E_temp = calculate_E(RR, dE[-1], BdR[-1], C, dm)
         E.append(E_temp)
-        diff = E[-1] - E[1]
+        diff = E[-1] - E[0]
         result_hist(diff, 0, 'Difference fitted E real E', prefix)
-        scatter(E[-1], E[1], 'Scatter fitted E real E', prefix)
+        scatter(E[-1], E[0], 'Scatter fitted E real E', prefix)
         la = 'Reddening Star ' + str(s)
         probe_chi_E(E[-1][s], BR[-1], dm[s], C[s], BdR[-1], dE[-1][s], V[-1], T[s], 0, la)
 
@@ -559,14 +558,77 @@ def unit_tests(test, BR, BdR, V, E, dE, T, l1, l2, dm, C, rho, dof, test_len, pr
         V.append(V_temp)
         scatter(V[-1],V[1],'Scatter fitted V real V', prefix)
 
-    if test == 'RV'
+    if test == 'RV':
+        for i in range(test_len):
+            BR_temp = calculate_R(BR[-1], E[-1], BdR[-1], dE[-1], C, dm, l1[-1], l2[-1], rho[2:], dof, V[-1], TE)
+            BR.append(BR_temp)
+            l_1 = l1[-1] + constraint_ortho(BR[-1], BdR[-1], rho[2], True)
+            l_2 = l2[-1] + constraint_unity(BR[-1], rho[3], True)
+            l1.append(l_1)
+            l2.append(l_2)
+            R = BR[-1].copy()
+            R[1:] += R[0]
+            te[i] = np.dot(R, R_1)
+            V_temp = calculate_R(V[-1], TE, BR[-1], E[-1], C, dm, 0, 0, [0,0], dof, BdR[-1], dE[-1])
+            V.append(V_temp)
+        probe_R(BR, l1, l2, BR[1], te, 'R', prefix)
+        scatter(V[-1],V[1],'Scatter fitted V real V', prefix)
+
+    if test == 'ERV':
+        for i in range(test_len):
+            E_temp = calculate_E(RR, dE[-1], BdR[-1], C, dm)
+            E.append(E_temp)
+            TE = T*E[-1]
+            if i%((test_len-1)//1)==0:
+                diff = E[-1] - E[0]
+                result_hist(diff, i, 'Difference fitted E real E', prefix)
+                la = 'Reddening Star ' + str(s)
+                probe_chi_E(E[-1][s], BR[-1], dm[s], C[s], BdR[-1], dE[-1][s], V[-1], T[s], i, la)
+            BR_temp = calculate_R(BR[-1], E[-1], BdR[-1], dE[-1], C, dm, l1[-1], l2[-1], rho[2:], dof, V[-1], TE)
+            BR.append(BR_temp)
+            l_1 = l1[-1] + constraint_ortho(BR[-1], BdR[-1], rho[2], True)
+            l_2 = l2[-1] + constraint_unity(BR[-1], rho[3], True)
+            l1.append(l_1)
+            l2.append(l_2)
+            R = BR[-1].copy()
+            R[1:] += R[0]
+            te[i] = np.dot(R, R_1)
+            V_temp = calculate_R(V[-1], TE, BR[-1], E[-1], C, dm, 0, 0, [0,0], dof, BdR[-1], dE[-1])
+            V.append(V_temp)
+            RR = BR[-1][None,:] + T[:,None]*V[-1][None,:]
+        probe_R(BR, l1, l2, BR[1], te, 'R', prefix)
+        scatter(V[-1],V[1],'Scatter fitted V real V', prefix)
+
+    if test == 'dEdRV':
+        for i in range(test_len):
+            dE_temp = calculate_E(BdR[-1], E[-1], RR, C, dm)
+            dE.append(dE_temp)
+            if i%((test_len-1)//1)==0:
+                diff = dE[-1] - dE[1]
+                result_hist(diff, i, 'Difference fitted dE real dE', prefix)
+                la = 'Reddening Variation Star ' + str(s)
+                probe_chi_E(dE[-1][s], BdR[-1], dm[s], C[s], BR[-1], E[-1][s], V[-1], T[s], i, la)
+            BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2], dof, V[-1], TE)
+            BdR.append(BdR_temp)
+            l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0],True)
+            l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1],True)
+            l1.append(l_1)
+            l2.append(l_2)
+            dR = BdR[-1].copy()
+            dR[1:] += dR[0]
+            te[i] = np.dot(dR,dR_1)
+            V_temp = calculate_R(V[-1], TE, BR[-1], E[-1], C, dm, 0, 0, [0,0], dof, BdR[-1], dE[-1])
+            V.append(V_temp)
+            RR = BR[-1][None,:] + T[:,None]*V[-1][None,:]
+        probe_R(BdR, l1, l2, BdR[1], te, 'dR with dE', prefix)
+        scatter(V[-1],V[1],'Scatter fitted V real V', prefix)
 
     if test == 'dEdR':
         for i in range(test_len):
             dE_temp = calculate_E(BdR[-1], E[-1], RR, C, dm)
             dE.append(dE_temp)
             if i%((test_len-1)//1)==0:
-                diff = dE[-1] - dE[0]
+                diff = dE[-1] - dE[1]
                 result_hist(diff, i, 'Difference fitted dE real dE', prefix)
                 la = 'Reddening Variation Star ' + str(s)
                 probe_chi_E(dE[-1][s], BdR[-1], dm[s], C[s], BR[-1], E[-1][s], V[-1], T[s], i, la)
@@ -587,7 +649,7 @@ def unit_tests(test, BR, BdR, V, E, dE, T, l1, l2, dm, C, rho, dof, test_len, pr
             E.append(E_temp)
             TE = T*E[-1]
             if i%((test_len-1)//1)==0:
-                diff = E[-1] - E[1]
+                diff = E[-1] - E[0]
                 result_hist(diff, i, 'Difference fitted E real E', prefix)
                 la = 'Reddening Star ' + str(s)
                 probe_chi_E(E[-1][s], BR[-1], dm[s], C[s], BdR[-1], dE[-1][s], V[-1], T[s], i, la)
@@ -613,7 +675,7 @@ def main():
     saving = dir + prefix +  'result.h5'
 
     #TODO Maybe lower rho as iterations go on?
-    rho = [1e-1,1e-1,1e-1,1e-0]
+    rho = [1e-1,1e-1,1e-0,1e-0]
     l1, l2, l3, l4 = [0], [0], [0], [0]
 
     # resolve arguments for the unit tests; see tests for possible test
@@ -629,21 +691,33 @@ def main():
     test = args.test
 
     # read out the data, Neural Network and prepare the data with the Neural Network
-    data, r, R_mock, dr_mock, dR_mock, V_mock = read_out(path)
+    data, r_mock, R_mock, dr_mock, dR_mock, V_mock = read_out(path)
     nn_model = tf.keras.models.load_model(model_path)
-    dm, C, R, r_fit, dof, cov_m = prepare_data(data, nn_model, r)
+    dm, C, R, dof, cov_m = prepare_data(data, nn_model)
 
     # prepare the list that saved the values for each iteration (!!we fit for BR/BdR!!)
     T = (data['atm_param'][:,0].copy()-6000)/1000
     BR_m = R.copy()
     BR_m[1:] -= BR_m[0]
-    V = [BR_m]
-    BR = [BR_m]
-    E = [r_fit]
-    BdR = [guess_dR(R)]
-    dE = []
+
+    very = np.random.default_rng(10).normal(1,0.05,V_mock.shape)
+
+    V = [very*V_mock]
+    BR = [very*R_mock] #[BR_m]
+    BdR = [very*dR_mock] #[guess_dR(R)]
+
+    dE = [np.zeros(len(data['atm_param'][:,0]))]
+
+    E = []
     chi = []
-    TE = T*E[-1]
+
+    R_mo = R_mock.copy()
+    R_mo[1:] += R_mo[0]
+    dR_mo = dR_mock.copy()
+    dR_mo[1:] += dR_mo[0]
+
+    dR = BdR[-1].copy()
+    dR[1:] += dR[0]
     RR = BR[-1][None,:] + T[:,None]*V[-1][None,:]
 
     if test is not None:
@@ -651,7 +725,7 @@ def main():
         BR.append(R_mock)
         dE.append(dr_mock)
         V.append(V_mock)
-        E.append(r)
+        E.append(r_mock)
         unit_tests(test, BR, BdR, V, E, dE, T, l1, l2, dm, C, rho, dof, limit, prefix)
         return 0
 
@@ -663,24 +737,6 @@ def main():
     drm_dot = np.empty((limit,))
 
     for i in range(limit):
-        # calculate dE
-        dE_temp = calculate_E(BdR[-1], E[-1], RR, C, dm)
-        dE.append(dE_temp)
-
-        # calculate dR
-        BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2], dof, V[-1], TE)
-        BdR.append(BdR_temp)
-        dR = BdR[-1].copy()
-        dR[1:] += dR[0]
-        dr_dot[i] = np.dot(dR,R)
-        dr_len[i] = np.dot(dR,dR)**0.5
-
-        # update lambda_1 and _2 according to the constraints and append
-        l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0])
-        l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1])
-        l1.append(l_1)
-        l2.append(l_2)
-
         # calculate E
         E_temp = calculate_E(RR, dE[-1], BdR[-1], C, dm)
         E.append(E_temp)
@@ -705,6 +761,24 @@ def main():
         V.append(V_temp)
         RR = BR[-1][None,:] + T[:,None]*V[-1][None,:]
 
+        # calculate dE
+        dE_temp = calculate_E(BdR[-1], E[-1], RR, C, dm)
+        dE.append(dE_temp)
+
+        # calculate dR
+        BdR_temp = calculate_R(BdR[-1], dE[-1], BR[-1], E[-1], C, dm, l1[-1], l2[-1], rho[:2], dof, V[-1], TE)
+        BdR.append(BdR_temp)
+        dR = BdR[-1].copy()
+        dR[1:] += dR[0]
+        dr_dot[i] = np.dot(dR,R)
+        dr_len[i] = np.dot(dR,dR)**0.5
+
+        # update lambda_1 and _2 according to the constraints and append
+        l_1 = l1[-1] + constraint_ortho(BdR[-1],BR[-1],rho[0])
+        l_2 = l2[-1] + constraint_unity(BdR[-1],rho[1])
+        l1.append(l_1)
+        l2.append(l_2)
+
         # Progress
         chi_t = np.sum(chi_sq(E[-1], BR[-1], dE[-1], BdR[-1], C, dm, TE, V[-1]))/dof
         chi.append(chi_t)
@@ -714,12 +788,12 @@ def main():
 
         # if integration testing
         if R_mock is not None:
-            rm_dot[i] = np.dot(BR[-1],R_mock)
-            drm_dot[i] = np.dot(BdR[-1],dR_mock)
+            rm_dot[i] = np.dot(R,R_mo)
+            drm_dot[i] = np.dot(dR,dR_mo)
             if i%(limit//3) == 0:
-                diff = dE[-1]*np.dot(BdR[-1],BdR[-1])**0.5 - dr_mock
+                diff = dE[-1] - dr_mock
                 result_hist(diff, i, 'Difference dE', prefix)
-                diff = E[-1]*np.dot(BR[-1],BR[-1])**0.5 - E[0]
+                diff = E[-1] - r_mock
                 result_hist(diff, i, 'Difference E', prefix)
                 print(f'Iteration {i}: Made a dE and E difference plot')
 
@@ -734,11 +808,11 @@ def main():
         print('Difference in R and mock:')
         print(BR[-1] - R_mock)
         print('Angle between R and mock:')
-        print(np.arccos(np.dot(BR[-1],R_mock)/(np.dot(R_mock,R_mock)**0.5*r_len[-1]))*180/np.pi)
+        print(np.arccos(np.dot(R,R_mo)/(np.dot(R_mo,R_mo)**0.5*r_len[-1]))*180/np.pi)
         print('Difference in dR and mock:')
         print(BdR[-1] - dR_mock)
         print('Angle between dR and mock:')
-        print(np.arccos(np.dot(BdR[-1],dR_mock)/(np.dot(dR_mock,dR_mock)**0.5*dr_len[-1]))*180/np.pi)
+        print(np.arccos(np.dot(dR,dR_mo)/(np.dot(dR_mo,dR_mo)**0.5*dr_len[-1]))*180/np.pi)
         for (arr, text) in plots:
             lambda_plot(arr, text, prefix)
 
