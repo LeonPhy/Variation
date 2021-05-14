@@ -9,12 +9,12 @@ import matplotlib.pyplot as plt
 import h5py
 
 
-def read_out(path):
+def read_out(path, result = 'result.h5'):
     # read out the data set
     path1 = path + 'data.h5'
-    path2 = path + 'result.h5'
+    path2 = path + result
     data = {}
-    keys = ['E', 'dE', 'R', 'dR', 'l', 'con', 'C', 'chi', 'cov', 'V', 'dm']
+    keys = ['E', 'dE', 'R', 'dR', 'l', 'con', 'C', 'chi', 'cov', 'V', 'dm', 'V_1']
 
     with h5py.File(path2, 'r') as f:
         for key in keys:
@@ -58,7 +58,7 @@ def result_hist(x, iter, label, prefix, xlim = None):
     pic = label.replace(' ', '_')
     picp = 'pictures/'+ prefix + pic +'_iteration_' + str(iter)
     plt.savefig(picp, dpi = 150, bbox_inches='tight')
-
+    plt.close(fig)
 
 def lambda_plot(l, label, prefix):
     """
@@ -75,7 +75,7 @@ def lambda_plot(l, label, prefix):
     pic = label.replace(' ', '_')
     picp = 'pictures/' + prefix +pic
     plt.savefig(picp, dpi = 150, bbox_inches='tight')
-
+    plt.close(fig)
 
 def correlation_plot(ax, x, y, xbins = 25, ybins = 20,
                  y_abs = None, y_pct = 99., pct = [15.87, 50., 84.13]):
@@ -165,7 +165,7 @@ def correlation_plot(ax, x, y, xbins = 25, ybins = 20,
     ax.set_ylim(extent[2:])
     ax.tick_params(axis='y', right=True, labelright=False)
     ax.tick_params(axis='x', top=True, labeltop=False)
-
+    
     return xbins, np.sum(hi_des, axis=1), ybins,  np.sum(hi_des, axis=0)
 
 
@@ -243,37 +243,38 @@ def temp_res(d, E, dE, R, dR, dm, cov, Bands = [(4,0), (4,), (8,), (11,)]):
             plt.close(fig)
 
 
-def red_teff(E,R,dE,dR,teff):
-    a = E[:,None]*R[None,:]
+def red_teff(E,R,V,dE,dR,teff, band):
+    a = E[:,None]*(R[None,:]+V[None,:])
     da = dE[:,None]*dR[None,:]
     A = a+da
     dE_E = dE/E
     idx = (E > 0.1)
+    bands = ['G', 'BP', 'RP'] + list('grizyJHK') + ['W1', 'W2']
+    plt.rcParams.update({'font.size':24})
+    fig = plt.figure(figsize=(20,14), facecolor = 'white')
+    [[ax1, ax2], [ax3, ax4]] = fig.subplots(2,2,sharex=True,gridspec_kw={'hspace':0,'wspace':0.3})
+
     x = [
-            (dE_E[idx],teff[idx],'dE over E'),
-            (A[:,0],teff,'dA+A'),
-            (a[:,0],teff,'A'),
-            (da[:,0],teff,'dA')
+            (ax1,dE_E[idx],teff[idx],'dE over E'),
+            (ax2,A[:,band],teff,'dA+A in band '+str(bands[band])),
+            (ax3,a[:,band],teff,'A in band '+str(bands[band])),
+            (ax4,da[:,band],teff,'dA in band '+str(bands[band]))
         ]
 
 
-    for x_value, y_value, x_label in x:
-        plt.rcParams.update({'font.size':24})
-        fig = plt.figure(figsize=(20,14), facecolor = 'white')
-        ax = fig.subplots(1,1)
+    for ax, x_value, y_value, x_label in x:
         correlation_plot(ax,y_value,x_value)
-        ax.set_xlabel('effective temperature')
-        ax.set_ylabel(x_label+' in G-band')
-        picp = 'pictures/'+ x_label.replace(' ','_') + '_over_eff_temp'
-        plt.savefig(picp, dpi=150, bbox_inches='tight')
-        plt.close(fig)
+        ax.set_ylabel(x_label)
+
+    ax3.set_xlabel('effective temperature')
+    ax4.set_xlabel('effective temperature')
+    picp = 'pictures/extinction_over_eff_temp_band'+str(bands[band])
+    plt.savefig(picp, dpi=150, bbox_inches='tight')
+    plt.close(fig)
 
 
-def component_plot(R, label):
-    it, n = R.shape
-    B_i = np.identity(n, dtype='f4')
-    B_i[1:,0] = 1
-    r = np.einsum('ij,nj->ni',B_i,R)
+def component_plot(r, label):
+    it, n = r.shape
     bands = ['G', 'BP', 'RP'] + list('grizyJHK') + ['W1', 'W2']
     plt.rcParams.update({'font.size':24})
     fig = plt.figure(figsize=(20,14), facecolor = 'white')
@@ -286,36 +287,75 @@ def component_plot(R, label):
 
     ax.set_ylabel(label)
     ax.set_xlabel('Iterations')
+    ax.grid(True)
     picp = 'pictures/'+ label.replace(' ', '_') + '_over_iterations'
     plt.savefig(picp, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
 
+def obj(chi, l, rho):
+    con = l[:-1,:]]/rho[None,:]*(l[1:,:]-l[:-1,:])
+    pen = (l[1:,:] - l[:-1,:])**2/(2*rho[None,:]
+    obj = chi[:] + np.sum(con, axis=1) + np.sum(pen)
 
 def main():
     dir = 'data/'
-    prefix = 'mock_seed20_small_temp_'
+    prefix = 'mock_seed20_small_temp_' #'green2020_small_'
     path = dir + prefix
 
-    d = read_out(path)
+    d = read_out(path, 'result.h5')
 
-    plots = [(d['l'][:,0], 'Lambda 1 (Ortho dR)'), (d['l'][:,2], 'Lambda 3 (Ortho R)'),
-                (d['l'][:,1], 'Lambda 2 (Unity dR)'), (d['l'][:,3], 'Lambda 4 (Unity R)'),
-                (d['con'][:,2], 'Ortho after dR'), (d['con'][:,3], 'Unity dR'),
-                (d['con'][:,0], 'Ortho after R'), (d['con'][:,1], 'Unity R'),
-                (d['chi'], 'Chi Sqaure')]
+    R = d['R']
+    V = d['V']
+    dR = d['dR']
+
+    for dd in (R,V,dR):
+        for i in range(len(dd[:,0])):
+            dd[i,1:] += dd[i,0]
+
+    Lam = True
+    Con = True
+    Chi = True
+
+    Comp = True
+    E_hist = False
+    temp_res = False
+    ex_bands = ()
+
+    plots = []
+
+
+    if Lam:
+        for a in [(d['l'][:,0], 'Lambda 1 (Ortho dR)'), (d['l'][:,2], 'Lambda 3 (Ortho R)'),
+                        (d['l'][:,1], 'Lambda 2 (Unity dR)'), (d['l'][:,3], 'Lambda 4 (Unity R)')]:
+            plots.append(a)
+
+    if Con:
+        for a in [(d['con'][:,2], 'Ortho after dR'), (d['con'][:,3], 'Unity dR'),
+                        (d['con'][:,0], 'Ortho after R'), (d['con'][:,1], 'Unity R')]:
+            plots.append(a)
+
+    if Chi:
+        for a in [(d['chi'], 'Chi Sqaure'),(d['chi'][200:], 'Zoom 200 Chi Sqaure')]:
+            plots.append(a)
 
     for (arr, text) in plots:
         lambda_plot(arr, text, prefix)
 
-    #result_hist(d['E'][-1,:],0,'E',prefix,(0,4))
-    #result_hist(d['dE'][-1,:],0,'dE',prefix,(-1,1))
+    if E_hist:
+        result_hist(d['E'][-1,:],0,'E',prefix,(-2,6))
+        result_hist(d['dE'][-1,:],0,'dE',prefix,(-1,1))
 
-    #temp_res(d['d'], d['E'][-1,:], d['dE'][-1,:], d['R'][-1,:], d['dR'][-2,:], d['dm'], d['cov'])
-    red_teff(d['E'][-1,:],d['R'][-1,:],d['dE'][-1,:],d['dR'][-1,:],d['d']['atm_param'][:,0])
-    component_plot(d['R'],'reddening')
-    component_plot(d['dR'],'reddening variation')
-    component_plot(d['V'],'temperature dependency')
+    if temp_res
+        temp_res(d['d'], d['E'][-1,:], d['dE'][-1,:], d['R'][-1,:], d['dR'][-1,:], d['dm'], d['cov'])
+
+    for i in ex_bands:
+        red_teff(d['E'][-1,:],R[-1],V[-1],d['dE'][-1,:],dR[-1],d['d']['atm_param'][:,0],i)
+
+    if Comp:
+        component_plot(R,'reddening')
+        component_plot(dR,'reddening variation')
+        component_plot(V,'temperature dependency')
 
 
     return 0

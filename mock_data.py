@@ -27,20 +27,22 @@ def save(path, d):
             f.create_dataset(key, data=d[key], chunks=True, compression='gzip', compression_opts=3)
 
 
-def guess_dR(R):
-    # read out the mean wavelengths of the 13 filters
-    with open('mean_wavelengths.json', 'r') as f:
+def guess_dR(R, file='mean'):
+    # read out the mean wavelengths of the 13 filters we use
+    with open(file+'_wavelength.json', 'r') as f:
         mean = json.load(f)
 
+    # inverted parabula peaking around 1 mikrometer
     x = np.array(mean)
+    l = 1/(x*1e-4)
+    print(l)
+    p = -np.abs(l-1.3)+1
+    #p = -(l-1.15)**2+2
 
-    # calculate the offset of the linear scaling to garnatuee it is perpendicular to R
-    b = np.sum(x*R)/np.sum(R)
-    y = x[:] - b[None]
+    # Gram-Schmidt process
+    y = p - (np.dot(R,p)/np.dot(R,R))*R
 
-    # add a factor to scale the reddening vector so our initial guess is not the same
-    y *= 0.7
-    # norm it to 1
+    # norm it to 1 and transform it to mag/color space
     y /= np.dot(y,y)**0.5
 
     return y
@@ -118,12 +120,20 @@ def mock_m(d, r, nn, seed = 14, max = 0.1):
 
     # adding the temperature variance
     T = (d['atm_param'][:,0].copy()-6000)/1000
-    V = np.array([0.1,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.1,1.2,1.3,1.4])  #np.var(R_all, axis=0)
+    V = rng.normal(0,0.1,13)  #np.var(R_all, axis=0)
     BV = np.einsum('ij,j->i',B,V)
+    print(np.dot(BV,BV)**0.5)
     m[:,:] += r[:,None] * T[:,None] * V[None,:]
 
     # guess BdR and generate random dE to add them to the mock m
     dR = guess_dR(R)
+    #dR[1:] = rng.normal(0,0.5,12)
+    #dR[12] = 0.01 
+    #dR[0] = -np.dot(dR[1:],R[1:])/R[0]
+    #dR /= np.dot(dR,dR)**0.5
+    print(dR)
+    print(R)
+    print(np.dot(dR,R))
     BdR = np.einsum('ij,j->i',B,dR)
     dE = rng.normal(0,max,(n_stars,))
     m[:,:] += dE[:,None] * dR[None,:]
