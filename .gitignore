@@ -43,3 +43,4 @@ Thumbs.db
 *.ipynb
 *.ipynb_checkpoints
 *.pyc
+*.fits
