@@ -14,11 +14,16 @@ def read_out(path, result = 'result.h5'):
     path1 = path + 'data.h5'
     path2 = path + result
     data = {}
-    keys = ['E', 'dE', 'R', 'dR', 'l', 'con', 'C', 'chi', 'cov', 'V', 'dm', 'V_1']
+    keys = ['save','E', 'dE', 'R', 'dR', 'l1', 'l2', 'l3', 'con', 'C', 'chi',
+                'rho', 'cov', 'V', 'dm']
+    mock = ['drm_dot','rm_dot','vm_dot','v_len','r_angle','dr_angle','v_angle']
 
     with h5py.File(path2, 'r') as f:
         for key in keys:
             data[key] = f[key][:]
+        if "mock" in path:
+            for key in mock:
+                data[key] = f[key][:]
 
     with h5py.File(path1, 'r') as f:
         data['d'] = f['data'][:]
@@ -276,6 +281,8 @@ def red_teff(E,R,V,dE,dR,teff, band):
 def component_plot(r, label):
     it, n = r.shape
     bands = ['G', 'BP', 'RP'] + list('grizyJHK') + ['W1', 'W2']
+    if len(bands) != n:
+        bands = np.linspace(1,n,n,dtype=int)
     plt.rcParams.update({'font.size':24})
     fig = plt.figure(figsize=(20,14), facecolor = 'white')
     ax = fig.subplots(1,1)
@@ -293,70 +300,208 @@ def component_plot(r, label):
     plt.close(fig)
 
 
-def obj(chi, l, rho):
-    con = l[:-1,:]]/rho[None,:]*(l[1:,:]-l[:-1,:])
-    pen = (l[1:,:] - l[:-1,:])**2/(2*rho[None,:]
-    obj = chi[:] + np.sum(con, axis=1) + np.sum(pen)
+def obj(chi, l1, l2, l3, rho, plots):
+    it = len(chi)
+    pen1 = 0.5*(np.diff(l1[::2]))**2/rho[0]
+    pen2 = 0.5*(np.diff(l2))**2/rho[1]
+    pen3 = 0.5*(np.diff(l3))**2/rho[2]
+
+    con1 = l1[:-2:2]*np.diff(l1[::2])/rho[0]
+    con2 = l2[:-1]*np.diff(l2)/rho[1]
+    con3 = l3[:-1]*np.diff(l3)/rho[2]
+
+    obj = chi + con1 + con2 + con3 + pen1 + pen2 + pen3
+
+    if plots:
+        parts = [pen1, pen2, pen3, con1 , con2, con3]
+        all = parts.copy()
+        all.append(chi)
+        all.append(obj)
+        parts = np.array(parts).T
+        all = np.array(all).T
+        component_plot(all, 'Objective function and parts')
+        component_plot(parts, 'Parts of objective function')
+
+    """
+    plt.rcParams.update({'font.size':24})
+    fig = plt.figure(figsize=(20,14), facecolor = 'white')
+    ax1, ax2 = fig.subplots(1,2)
+    ax1.set_ylabel('Objective functions')
+    ax1.set_xlabel('Iteration')
+    ax.grid(True)
+    pic = label.replace(' ', '_')
+    picp = 'pictures/' + prefix +pic
+    plt.savefig(picp, dpi = 150, bbox_inches='tight')
+    plt.close(fig)
+    """
+    return obj
+
+
+def stability_check(og_array, size = 0.05, length=100):
+
+    if len(og_array)-1 < length:
+        return False
+
+
+    array = np.diff(og_array)
+
+    check1 = array[-length:-length//2]
+    check2 = array[-length//2:]
+
+    mean1 = np.mean(check1)
+    mean2 = np.mean(check2)
+
+    vary = np.std(check1+check2, axis=0)
+
+    combine = np.abs(mean1 - mean2)/vary
+    #print(combine)
+
+    stab = (size > combine)
+
+    return stab
+
+
+def criterion(x):
+    length = x.size
+    x0 = np.mean(x[:length//2])
+    x1 = np.mean(x[-length//2:])
+    sigma = np.std(x)
+    norm = 4*sigma**2/length
+    return (x1-x0)**2/norm
+
 
 def main():
     dir = 'data/'
     prefix = 'mock_seed20_small_temp_' #'green2020_small_'
     path = dir + prefix
+    plots = []
 
-    d = read_out(path, 'result.h5')
+    d = read_out(path, '500000its_result.h5')
 
     R = d['R']
     V = d['V']
     dR = d['dR']
+    E = d['E'][-1]
+    dE = d['dE'][-1]
+
 
     for dd in (R,V,dR):
         for i in range(len(dd[:,0])):
             dd[i,1:] += dd[i,0]
 
-    Lam = True
-    Con = True
-    Chi = True
 
-    Comp = True
+    Obj = False
+    Stop = False
+    Lam = False
+    Con = False
+    Chi = True
+    Diff = False
+    Comp = False
+    Mock = False
+
     E_hist = False
     temp_res = False
-    ex_bands = ()
-
-    plots = []
+    ex_bands = []
 
 
+    #entangle obj calc and making the plot
+    obje = obj(d['chi'],d['l1'],d['l2'],d['l3'],d['rho'], Obj)
+
+    num = [str(s) for s in range(1,14)]
+    R_num = ['R'+s for s in num]
+    dR_num = ['dR'+s for s in num]
+    V_num = ['V'+s for s in num]
+    names = ['obj','l1','l2','l3'] + R_num + dR_num + V_num
+
+    R_ch = [R[:,s] for s in range(13)]
+    dR_ch = [dR[:,s] for s in range(13)]
+    V_ch = [V[:,s] for s in range(13)]
+    checks = [obje, d['l1'][::2], d['l2'], d['l3']] + R_ch + dR_ch + V_ch
+
+    if Stop:
+        for name, ar in zip(names,checks):
+            length = 500
+            stop = []
+            for ob in range(2*length,(len(d['l2'])),length):
+                stop.append(criterion(ar[(ob-length):ob]))
+
+            lambda_plot(stop,name+' criterion',prefix)
+
+    plot = []
+
+    #maybe make dedicated methods for drawing these plots?
     if Lam:
-        for a in [(d['l'][:,0], 'Lambda 1 (Ortho dR)'), (d['l'][:,2], 'Lambda 3 (Ortho R)'),
-                        (d['l'][:,1], 'Lambda 2 (Unity dR)'), (d['l'][:,3], 'Lambda 4 (Unity R)')]:
-            plots.append(a)
+        Lam = [
+            (d['l1'], 'Lambda 1 (Ortho)'),
+            (d['l2'], 'Lambda 2 (Unity dR)'),
+            (d['l3'], 'Lambda 3 (Unity R)')]
+
+        plot = plot + Lam
+        component_plot(np.array((d['l1'][1::2],d['l1'][2::2])).T,'lambda 1')
+
 
     if Con:
-        for a in [(d['con'][:,2], 'Ortho after dR'), (d['con'][:,3], 'Unity dR'),
-                        (d['con'][:,0], 'Ortho after R'), (d['con'][:,1], 'Unity R')]:
-            plots.append(a)
+        Con = [
+            (d['con'][:,2], 'Ortho after dR'),
+            (d['con'][:,3], 'Unity dR'),
+            (d['con'][:,0], 'Ortho after R'),
+            (d['con'][:,1], 'Unity R')]
+
+        plot = plot + Con
+
 
     if Chi:
-        for a in [(d['chi'], 'Chi Sqaure'),(d['chi'][200:], 'Zoom 200 Chi Sqaure')]:
-            plots.append(a)
+        Chi = [
+            (d['chi'][-10000:], 'Chi Square')]
+            #(d['chi'][200:], 'Zoom 200 Chi Square')]
 
-    for (arr, text) in plots:
-        lambda_plot(arr, text, prefix)
+        plot = plot + Chi
+
+
+    if Diff:
+        Diff = [
+            (np.diff(d['l2'][1500:]),'Lambda 2 diff'),
+            (np.diff(d['l3'][1000:]),'Lambda 3 diff'),
+            (np.diff(d['chi'][1500:]),'Chi diff'),
+            (np.diff(obje[1500:]),'Objective diff')]
+
+        plot = plot + Diff
+        component_plot(np.diff(R[-5000:],axis=0),'reddening diff')
+        component_plot(np.diff(dR[-5000:],axis=0),'reddening variation diff')
+        component_plot(np.diff(V[-5000:],axis=0),'temperature diff')
+
+
+
+    if Mock:
+        Mock = [
+            (d['r_angle'],'Angle between R and R mock'),
+            (d['dr_angle'],'Angle between dR and dR mock'),
+            (d['v_angle'],'Angle between V and V mock'),
+            (d['drm_dot'],'Dot between dR and Mock dR'),
+            (d['rm_dot'],'Dot between R and Mock R')]
+
+        plot = plot + Mock
+
 
     if E_hist:
-        result_hist(d['E'][-1,:],0,'E',prefix,(-2,6))
-        result_hist(d['dE'][-1,:],0,'dE',prefix,(-1,1))
+        result_hist(E,0,'E',prefix,(-2,6))
+        result_hist(dE,0,'dE',prefix,(-1,1))
 
-    if temp_res
-        temp_res(d['d'], d['E'][-1,:], d['dE'][-1,:], d['R'][-1,:], d['dR'][-1,:], d['dm'], d['cov'])
+    if temp_res:
+        temp_res(d['d'], E, dE, d['R'][-1,:], d['dR'][-1,:], d['dm'], d['cov'])
 
     for i in ex_bands:
-        red_teff(d['E'][-1,:],R[-1],V[-1],d['dE'][-1,:],dR[-1],d['d']['atm_param'][:,0],i)
+        red_teff(E,R[-1],V[-1],dE,dR[-1],d['d']['atm_param'][:,0],i)
 
     if Comp:
-        component_plot(R,'reddening')
-        component_plot(dR,'reddening variation')
-        component_plot(V,'temperature dependency')
+        #component_plot(R[-200000::10],'reddening')
+        #component_plot(dR[-200000::10],'reddening variation')
+        #component_plot(V[-200000::10],'temperature dependency')
+        for ar, name in zip(checks, names):
+            lambda_plot(ar[-200000::10],name+' component',prefix)
 
+    for arr, n in plot:
+        lambda_plot(arr,n,prefix)
 
     return 0
 
